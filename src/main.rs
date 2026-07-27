@@ -3,6 +3,7 @@ mod consts;
 mod enemy;
 mod player;
 mod scene;
+mod soap;
 mod state;
 mod ui;
 
@@ -23,6 +24,7 @@ fn main() {
             scene::ScenePlugin,
             player::PlayerPlugin,
             bubble::BubblePlugin,
+            soap::SoapPlugin,
             enemy::EnemyPlugin,
             ui::HudPlugin,
         ))

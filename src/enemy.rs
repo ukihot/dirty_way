@@ -183,7 +183,8 @@ fn enemy_reach_center(
     for (entity, enemy, transform) in &enemies {
         let dist = Vec2::new(transform.translation.x, transform.translation.z).length();
         if dist <= CENTER_KILL_RADIUS {
-            commands.entity(entity).despawn();
+            // bubble.rs 側の撃破処理と同一フレームで競合しうるため try_despawn にする。
+            commands.entity(entity).try_despawn();
             health.0 -= enemy.kind.contact_damage();
             if health.0 <= 0 {
                 health.0 = 0;

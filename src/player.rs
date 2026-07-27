@@ -5,6 +5,7 @@ use rand::Rng;
 
 use crate::bubble::spawn_bubble;
 use crate::consts::*;
+use crate::soap::SoapSpawnRequest;
 use crate::state::GameState;
 
 #[derive(Component)]
@@ -86,8 +87,7 @@ fn handle_charge_input(
     mut charge: ResMut<Charge>,
     aim: Res<Aim>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut soap_spawn: MessageWriter<SoapSpawnRequest>,
 ) {
     if keyboard.just_pressed(KeyCode::Space) {
         charge.charging = true;
@@ -100,7 +100,7 @@ fn handle_charge_input(
 
     if keyboard.just_released(KeyCode::Space) && charge.charging {
         let fraction = (charge.time / CHARGE_MAX_TIME).clamp(0.0, 1.0);
-        fire_bubble(&mut commands, &mut meshes, &mut materials, aim.direction(), fraction);
+        fire_bubble(&mut commands, &mut soap_spawn, aim.direction(), fraction);
         charge.charging = false;
         charge.time = 0.0;
     }
@@ -108,8 +108,7 @@ fn handle_charge_input(
 
 fn fire_bubble(
     commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    soap_spawn: &mut MessageWriter<SoapSpawnRequest>,
     aim_dir: Vec3,
     fraction: f32,
 ) {
@@ -128,5 +127,14 @@ fn fire_bubble(
     let radius = BUBBLE_MIN_RADIUS + (BUBBLE_MAX_RADIUS - BUBBLE_MIN_RADIUS) * fraction;
     let power = 1 + (fraction * 2.0).floor() as i32;
 
-    spawn_bubble(commands, meshes, materials, spawn_pos, velocity, radius, power);
+    // ゲームロジック用の当たり判定（Avian3D、見た目なし）。
+    spawn_bubble(commands, spawn_pos, velocity, radius, power);
+
+    // 見た目用のGPUリアルタイム液体（soap.rs）。同じ初期条件で同時に発射する。
+    soap_spawn.write(SoapSpawnRequest {
+        position: spawn_pos,
+        direction: velocity,
+        pressure: 1.0,
+        amount: 12 + (fraction * 12.0) as u32,
+    });
 }

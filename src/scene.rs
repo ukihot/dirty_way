@@ -17,8 +17,11 @@ fn setup_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // カメラ：中央のサークルを見下ろす固定アングル
+    // Msaa::Off: soap.rs のカスタムメタボール描画パイプラインをMSAA非対応の
+    // 単純な構成にするため、このゲームでは常時オフにする。
     commands.spawn((
         Camera3d::default(),
+        Msaa::Off,
         Transform::from_xyz(0.0, 18.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
@@ -34,14 +37,16 @@ fn setup_scene(
         Transform::from_xyz(0.0, 12.0, 0.0),
     ));
 
-    // 床（物理コライダー + 見た目のマット）
+    // 床（物理コライダー + キッチンのステンレス天板のような銀色マテリアル）
     commands.spawn((
         RigidBody::Static,
         Collider::half_space(Vec3::Y),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(ARENA_RADIUS * 2.2, ARENA_RADIUS * 2.2))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.78, 0.87, 0.95),
-            perceptual_roughness: 0.9,
+            base_color: Color::srgb(0.62, 0.64, 0.66),
+            metallic: 0.9,
+            perceptual_roughness: 0.35,
+            reflectance: 0.6,
             ..default()
         })),
     ));

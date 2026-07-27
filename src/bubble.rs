@@ -1,12 +1,13 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use rand::Rng;
 
 use crate::consts::*;
 use crate::enemy::{Enemy, Trapped};
 use crate::state::{GameState, Score};
 
-/// プレイヤーが発射する泡。power はダメージ量（チャージが深いほど増える）。
+/// プレイヤーが発射する泡の当たり判定（ゲームロジック専用、見た目は持たない）。
+/// 見た目は `soap.rs` のGPUリアルタイム液体表現が別途担当する。
+/// power はダメージ量（チャージが深いほど増える）。
 /// 敵に当たっても即座には消えず、
 /// しばらく居座って「埋もれた」敵の足止めを続ける。
 #[derive(Component)]
@@ -29,59 +30,18 @@ impl Plugin for BubblePlugin {
     }
 }
 
-pub fn spawn_bubble(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    position: Vec3,
-    velocity: Vec3,
-    radius: f32,
-    power: i32,
-) {
-    let material = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.85, 0.95, 1.0, 0.6),
-        alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.15,
-        reflectance: 0.6,
-        ..default()
-    });
-
-    let mut rng = rand::thread_rng();
-    let voxel_count = rng.gen_range(BUBBLE_VOXEL_MIN_COUNT..=BUBBLE_VOXEL_MAX_COUNT);
-
-    commands
-        .spawn((
-            Bubble { power, life: 0.0, hit_enemies: Vec::new() },
-            RigidBody::Dynamic,
-            Collider::sphere(radius),
-            Restitution::new(0.55),
-            Friction::new(0.05),
-            LinearDamping(0.15),
-            AngularDamping(0.4),
-            LinearVelocity(velocity),
-            Transform::from_translation(position),
-            Visibility::default(),
-        ))
-        .with_children(|parent| {
-            // 毎回ランダムな個数・大きさ・配置のボクセルを寄せ集めて、
-            // 同じ形にならない「雲塊」っぽい見た目を作る。
-            for _ in 0..voxel_count {
-                let voxel_size = radius * rng.gen_range(0.45..0.75);
-                let offset_dir = Vec3::new(
-                    rng.gen_range(-1.0f32..1.0),
-                    rng.gen_range(-1.0f32..1.0),
-                    rng.gen_range(-1.0f32..1.0),
-                )
-                .normalize_or_zero();
-                let offset = offset_dir * rng.gen_range(0.0f32..radius * 0.55);
-
-                parent.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(voxel_size, voxel_size, voxel_size))),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(offset),
-                ));
-            }
-        });
+pub fn spawn_bubble(commands: &mut Commands, position: Vec3, velocity: Vec3, radius: f32, power: i32) {
+    commands.spawn((
+        Bubble { power, life: 0.0, hit_enemies: Vec::new() },
+        RigidBody::Dynamic,
+        Collider::sphere(radius),
+        Restitution::new(0.55),
+        Friction::new(0.05),
+        LinearDamping(0.15),
+        AngularDamping(0.4),
+        LinearVelocity(velocity),
+        Transform::from_translation(position),
+    ));
 }
 
 fn tick_bubble_lifetime(
@@ -126,7 +86,12 @@ fn bubble_enemy_interaction(
                 continue;
             };
 
-            commands.entity(other).insert(Trapped { remaining: TRAPPED_LINGER_TIME });
+            // try_insert/try_despawn: 同じ敵が複数の泡に同時接触していると、
+            // 片方の泡が先に倒して despawn を積んだ後にもう片方が Trapped を
+            // 挿入しようとすることがある（Commandsの反映は次の同期点まで
+            // 遅延するため、このフレーム中はまだ同じEntityが両方から見える）。
+            // 素朴な insert/despawn だとその場合に「既に消えたEntity」エラーになる。
+            commands.entity(other).try_insert(Trapped { remaining: TRAPPED_LINGER_TIME });
 
             if bubble.hit_enemies.contains(&other) {
                 continue;
@@ -136,7 +101,7 @@ fn bubble_enemy_interaction(
             enemy.health -= bubble.power;
             if enemy.health <= 0 {
                 score.0 += enemy.kind.score_value();
-                commands.entity(other).despawn();
+                commands.entity(other).try_despawn();
             }
         }
     }

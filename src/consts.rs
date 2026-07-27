@@ -31,9 +31,6 @@ pub const BUBBLE_MIN_RADIUS: f32 = 0.28;
 pub const BUBBLE_MAX_RADIUS: f32 = 0.55;
 /// 泡の寿命（秒）。当たらなくても時間切れで消える。
 pub const BUBBLE_LIFETIME: f32 = 6.0;
-/// 泡を構成するボクセル（雲塊）の個数の範囲。毎回ランダムで見た目が変わる。
-pub const BUBBLE_VOXEL_MIN_COUNT: u32 = 5;
-pub const BUBBLE_VOXEL_MAX_COUNT: u32 = 9;
 
 /// 敵が泡に埋もれている間の鈍足倍率と、接触が切れてから鈍足が続く猶予秒数。
 pub const TRAPPED_SPEED_MULTIPLIER: f32 = 0.15;
