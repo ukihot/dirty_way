@@ -1,0 +1,11 @@
+[alias]
+build-windows = "build --target x86_64-pc-windows-msvc"
+build-linux = "build --target x86_64-unknown-linux-gnu"
+build-macos = "build --target x86_64-apple-darwin"
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
