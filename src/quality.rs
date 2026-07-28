@@ -18,6 +18,10 @@ pub enum FoamQuality {
     #[default]
     Medium,
     High,
+    /// レイマーチが「bounding sphereの粗判定＋早期終了＋適応ステップ」で
+    /// ブルートフォースでなくなったため、High以上のステップ数・Aggregate数を
+    /// 現実的なコストで狙えるようになった段階（soap_render.wgsl参照）。
+    Cinematic,
 }
 
 impl FoamQuality {
@@ -38,6 +42,11 @@ impl FoamQuality {
                 raymarch_steps: 96,
                 microstructure_quality: MicrostructureQuality::Detailed,
             },
+            FoamQuality::Cinematic => FoamQualityProfile {
+                max_aggregates: 512,
+                raymarch_steps: 160,
+                microstructure_quality: MicrostructureQuality::Detailed,
+            },
         }
     }
 
@@ -46,6 +55,7 @@ impl FoamQuality {
             FoamQuality::Low => "Low",
             FoamQuality::Medium => "Medium",
             FoamQuality::High => "High",
+            FoamQuality::Cinematic => "Cinematic",
         }
     }
 }
@@ -94,8 +104,9 @@ impl Plugin for QualityPlugin {
     }
 }
 
-/// 暫定デバッグUI：1/2/3キーでLow/Medium/Highを直接切り替える。実機ベンチマーク
-/// （どのGPUでどのQualityが成立するか）を取るための、設定画面ができるまでの代用。
+/// 暫定デバッグUI：1/2/3/4キーでLow/Medium/High/Cinematicを直接切り替える。
+/// 実機ベンチマーク（どのGPUでどのQualityが成立するか）を取るための、
+/// 設定画面ができるまでの代用。
 fn handle_quality_hotkeys(keyboard: Res<ButtonInput<KeyCode>>, mut quality: ResMut<FoamQualitySetting>) {
     if keyboard.just_pressed(KeyCode::Digit1) {
         quality.0 = FoamQuality::Low;
@@ -103,5 +114,7 @@ fn handle_quality_hotkeys(keyboard: Res<ButtonInput<KeyCode>>, mut quality: ResM
         quality.0 = FoamQuality::Medium;
     } else if keyboard.just_pressed(KeyCode::Digit3) {
         quality.0 = FoamQuality::High;
+    } else if keyboard.just_pressed(KeyCode::Digit4) {
+        quality.0 = FoamQuality::Cinematic;
     }
 }

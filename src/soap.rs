@@ -67,6 +67,7 @@ impl Plugin for SoapPlugin {
             .init_resource::<ExtractedFoamAggregates>()
             .init_resource::<ExtractedFoamQuality>()
             .init_resource::<FoamDriveQueue>()
+            .init_resource::<ActiveSlotBuffer>()
             .init_resource::<SoapSimParamsBuffer>()
             .init_resource::<SoapViewUniformBuffer>()
             .add_systems(ExtractSchedule, (extract_foam_aggregates, extract_foam_quality))
@@ -138,6 +139,8 @@ struct SoapViewUniform {
     raymarch_steps: u32,
     /// MicrostructureQuality::as_u32() のエンコードと対応（soap_render.wgsl参照）。
     microstructure_quality: u32,
+    /// `active_slots`（下記）の実際に有効な要素数（課題S-12）。
+    active_count: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +243,11 @@ fn init_soap_render_resources(
             binding_types::storage_buffer_read_only::<FoamInstance>(false),
             // @group(0) @binding(1) var<uniform> view: SoapView;
             binding_types::uniform_buffer::<SoapViewUniform>(false),
+            // @group(0) @binding(2) var<storage, read> active_slots: array<u32>;
+            // 課題S-12：poolの512スロット全部ではなく、実際に生きているAggregateの
+            // スロット番号だけを並べたリスト。レイマーチ側のループ回数を
+            // 「常に512」から「今アクティブな数だけ」に減らすためのもの。
+            binding_types::storage_buffer_read_only::<u32>(false),
         ),
     );
     let render_layout = BindGroupLayoutDescriptor::new("soap_render_layout", &render_layout_entries);
@@ -273,6 +281,14 @@ fn init_soap_render_resources(
 #[derive(Resource, Default)]
 struct FoamDriveQueue(StorageBuffer<Vec<GpuDriveEntry>>);
 
+/// 課題S-12：レイマーチ側（フラグメントシェーダー）が「今アクティブな
+/// スロット番号」だけを辿れるようにするための一覧。これが無いと、
+/// `scene_density`/距離計算がpoolの512スロット全部を毎回舐めることになり、
+/// アクティブなAggregateが2個程度でも致命的に重くなる（低性能GPUで実測
+/// FPS=1という壊滅的な結果が出た）。
+#[derive(Resource, Default)]
+struct ActiveSlotBuffer(StorageBuffer<Vec<u32>>);
+
 #[derive(Resource, Default)]
 struct SoapSimParamsBuffer(UniformBuffer<SimParams>);
 
@@ -290,6 +306,7 @@ fn prepare_soap_view_uniform(
     // 「Phase 1: カメラ1台固定」はViewTargetを持つ実際の描画カメラに限定する）。
     views: Query<&ExtractedView, With<ViewTarget>>,
     quality: Res<ExtractedFoamQuality>,
+    extracted: Res<ExtractedFoamAggregates>,
 ) {
     let profile = quality.0.profile();
     // Phase 1: カメラ1台固定という前提（doc第23節と同じ簡略化）。
@@ -303,6 +320,7 @@ fn prepare_soap_view_uniform(
             camera_world_position: view.world_from_view.translation(),
             raymarch_steps: profile.raymarch_steps,
             microstructure_quality: profile.microstructure_quality.as_u32(),
+            active_count: extracted.0.len() as u32,
         });
     }
     buffer.0.write_buffer(&render_device, &render_queue);
@@ -311,12 +329,14 @@ fn prepare_soap_view_uniform(
 fn prepare_foam_drive_queue(
     extracted: Res<ExtractedFoamAggregates>,
     mut drive_queue: ResMut<FoamDriveQueue>,
+    mut active_slots: ResMut<ActiveSlotBuffer>,
     mut sim_params: ResMut<SoapSimParamsBuffer>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     time: Res<Time>,
 ) {
     drive_queue.0.get_mut().clear();
+    active_slots.0.get_mut().clear();
 
     for aggregate in &extracted.0 {
         drive_queue.0.get_mut().push(GpuDriveEntry {
@@ -326,6 +346,8 @@ fn prepare_foam_drive_queue(
             base_radius: aggregate.radius,
             generation: aggregate.generation,
         });
+        // 課題S-12：レンダー側がpool全体ではなく、この一覧だけを辿れるようにする。
+        active_slots.0.get_mut().push(aggregate.slot);
     }
 
     if drive_queue.0.get().is_empty() {
@@ -339,9 +361,15 @@ fn prepare_foam_drive_queue(
             generation: 0,
         });
     }
+    if active_slots.0.get().is_empty() {
+        // ゼロサイズのストレージバッファを作らないためのダミー。
+        // active_count(SoapViewUniform)が0なので、レンダー側で読まれることはない。
+        active_slots.0.get_mut().push(0);
+    }
 
     let drive_count = drive_queue.0.get().len() as u32;
     drive_queue.0.write_buffer(&render_device, &render_queue);
+    active_slots.0.write_buffer(&render_device, &render_queue);
 
     sim_params.0.set(SimParams {
         dt: time.delta_secs(),
@@ -371,12 +399,16 @@ fn prepare_soap_bind_groups(
     pipeline_cache: Res<PipelineCache>,
     gpu: Res<SoapGpuResources>,
     drive_queue: Res<FoamDriveQueue>,
+    active_slots: Res<ActiveSlotBuffer>,
     sim_params: Res<SoapSimParamsBuffer>,
     view_uniform: Res<SoapViewUniformBuffer>,
 ) {
-    let (Some(drive_binding), Some(sim_binding), Some(view_binding)) =
-        (drive_queue.0.binding(), sim_params.0.binding(), view_uniform.0.binding())
-    else {
+    let (Some(drive_binding), Some(active_slots_binding), Some(sim_binding), Some(view_binding)) = (
+        drive_queue.0.binding(),
+        active_slots.0.binding(),
+        sim_params.0.binding(),
+        view_uniform.0.binding(),
+    ) else {
         return;
     };
 
@@ -391,7 +423,11 @@ fn prepare_soap_bind_groups(
     let render = render_device.create_bind_group(
         Some("soap_render_bind_group"),
         &render_layout,
-        &BindGroupEntries::sequential((gpu.foam_instance_pool.as_entire_binding(), view_binding)),
+        &BindGroupEntries::sequential((
+            gpu.foam_instance_pool.as_entire_binding(),
+            view_binding,
+            active_slots_binding,
+        )),
     );
 
     commands.insert_resource(SoapBindGroups { compute, render });

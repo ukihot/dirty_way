@@ -24,6 +24,8 @@ struct SoapView {
     raymarch_steps: u32,
     // MICROSTRUCTURE_* 定数のいずれかと対応。
     microstructure_quality: u32,
+    // active_slots の実際に有効な要素数（課題S-12）。
+    active_count: u32,
 };
 
 const STATE_INACTIVE: u32 = 0u;
@@ -39,8 +41,30 @@ const MICROSTRUCTURE_DETAILED: u32 = 2u;
 const MAX_LIFETIME: f32 = 6.0;
 const FADE_DURATION: f32 = 1.0;
 
+// 課題S-13：`instance_density`のbase(=max(0,1-d))はInstance中心(d=0)で
+// ちょうど1.0に達し、表面(d=1)で0まで落ちる形をしている。旧アーキテクチャ
+// （1発=10〜30個の重なり合う粒子）は、複数Instanceの合算でこの閾値を
+// 超えさせる「メタボール融合」を前提に1.0へ調整されていた。今は1発=1個の
+// 孤立したFoam Aggregateが基本形なので、単体では中心のほぼ一点でしか
+// 1.0に届かず、しかもMicrostructureノイズが密度を最大±17.5%
+// （Detailedならさらに）揺らすため、その一点すらノイズ次第で閾値を割って
+// しまい、「まばらな小石」のような見た目になっていた。孤立した1個でも
+// 十分な体積（中心から見て半径の6〜7割程度）を持てるよう、ノイズによる
+// 落ち込み分に余裕を持たせて下げる。
+const DENSITY_THRESHOLD: f32 = 0.5;
+// 適応ステップ（bounding sphereの外にいる間の安全なジャンプ距離の下限）。
+// 距離が0に近い状況での停留を避けるための最小前進量。
+const MIN_MARCH_STEP: f32 = 0.02;
+// 少なくとも1つのbounding sphere内部にいる間に使う、細かい固定ステップ。
+// Instanceの半径（BUBBLE_MAX_RADIUS×最大spread、概ね2弱）に対して十分
+// 細かく、表面を取りこぼしにくい値。
+const FINE_STEP: f32 = 0.08;
+
 @group(0) @binding(0) var<storage, read> foam_instances: array<FoamInstance>;
 @group(0) @binding(1) var<uniform> view: SoapView;
+// 課題S-12：poolの512スロット全部ではなく、実際に生きているAggregateの
+// スロット番号だけを並べたリスト（先頭 view.active_count 個だけが有効）。
+@group(0) @binding(2) var<storage, read> active_slots: array<u32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -121,17 +145,69 @@ fn instance_density(p: vec3<f32>, inst: FoamInstance) -> f32 {
     return noisy * fade;
 }
 
-fn scene_density(p: vec3<f32>) -> f32 {
+// Instanceを球（半径は最長の半軸長）で包む。楕円体の表面上のどの点も
+// 中心からmax(scale.x,scale.y,scale.z)より遠くにはならないので、これは
+// 「密度が非ゼロになりうる範囲」を過不足なく覆う安全な外接球になる。
+fn bounding_radius(inst: FoamInstance) -> f32 {
+    return max(inst.scale.x, max(inst.scale.y, inst.scale.z));
+}
+
+// 課題S-12：`foam_instances`はpool容量分（512）の固定長配列で、そのうち
+// 実際にアクティブなのはせいぜい数個〜数十個でしかない。以前はここを
+// 「0..arrayLength(&foam_instances)」で総当たりしており、レイマーチの
+// 各ステップで常に512回のループが走っていた（ノイズ計算自体はbounding
+// sphereでスキップできても、ループの回数そのものは減らせていなかった）。
+// 低性能GPU（GTX 1650 SUPER）で実測FPS=1という壊滅的な結果になったのは
+// これが原因。`active_slots`（Aggregate数個分しかない配列）だけを辿る
+// ことで、ループ回数を「常に512」から「今アクティブな数だけ」に減らす。
+//
+// 全Instanceを総当たりで評価する素朴な実装は、
+//     Ray March Steps × Foam Instances × Microstructure Noise
+// というコスト構造になり、Detailedなら1 Instanceあたりhash31が最大16回
+// 走る。ここではさらに2つの最適化を組み合わせて無駄な評価を減らす。
+//
+// 1. 粗判定（broad phase）：bounding sphereの外側にあるInstanceは、
+//    ノイズ込みの高価な instance_density を呼ぶ前に安価な距離比較だけで
+//    スキップする（early_exitの有無に関わらず常に安全・正確）。
+// 2. 早期終了：密度の合計が閾値に達した時点で、残りのInstanceを評価せずに
+//    打ち切る。「閾値を超えているか」という真偽値だけが必要なレイマーチの
+//    表面判定では安全（超えた事実は変わらない）。ただし打ち切ると返り値は
+//    「真の合計」ではなく「閾値をわずかに超えた時点の部分和」になるため、
+//    法線を有限差分で求める際にサンプル間で不揃いな値を引き算してしまう
+//    おそれがある。法線計算では early_exit=false を渡し、常に真の合計を使う。
+fn scene_density(p: vec3<f32>, early_exit: bool) -> f32 {
     var sum = 0.0;
-    let count = arrayLength(&foam_instances);
-    for (var i = 0u; i < count; i = i + 1u) {
-        let inst = foam_instances[i];
+    for (var i = 0u; i < view.active_count; i = i + 1u) {
+        let inst = foam_instances[active_slots[i]];
         if (inst.state == STATE_INACTIVE) {
             continue;
         }
+        if (distance(p, inst.position) > bounding_radius(inst)) {
+            continue;
+        }
         sum = sum + instance_density(p, inst);
+        if (early_exit && sum >= DENSITY_THRESHOLD) {
+            return sum;
+        }
     }
     return sum;
+}
+
+// レイマーチの可変ステップ用：アクティブな全Instanceのbounding sphere境界
+// までの符号付き距離のうち最小のものを返す。正の値なら「そこまでは何の
+// 密度も無いと保証できる」安全なジャンプ距離。0以下なら、少なくとも1つの
+// bounding sphere内部にいる（＝密度を実際に評価すべき領域）。
+fn nearest_bound_distance(p: vec3<f32>) -> f32 {
+    var nearest = 1.0e9;
+    for (var i = 0u; i < view.active_count; i = i + 1u) {
+        let inst = foam_instances[active_slots[i]];
+        if (inst.state == STATE_INACTIVE) {
+            continue;
+        }
+        let d = distance(p, inst.position) - bounding_radius(inst);
+        nearest = min(nearest, d);
+    }
+    return nearest;
 }
 
 // 泡が存在しうる範囲（アリーナ＋飛翔の高さ）を大まかに囲うAABB。
@@ -139,12 +215,6 @@ fn scene_density(p: vec3<f32>) -> f32 {
 // Phase 1の簡易最適化（第25.3節の「小規模プロトタイプ向け最小実装」の一部）。
 const BOUNDS_MIN: vec3<f32> = vec3<f32>(-18.0, -0.5, -18.0);
 const BOUNDS_MAX: vec3<f32> = vec3<f32>(18.0, 6.0, 18.0);
-
-const DENSITY_THRESHOLD: f32 = 1.0;
-// ステップ数はview.raymarch_steps（Foam Quality、doc S-11a）で決まる。
-// 96より粗いと、AABB全体(最大36x6.5x36)に対してInstanceの塊
-// （半径1〜2程度）をまたぎ越して一切ヒットしないことがあるので、
-// Lowでもある程度のステップ数は確保する（quality.rs参照）。
 
 fn ray_box_intersect(origin: vec3<f32>, inv_dir: vec3<f32>) -> vec2<f32> {
     let t0 = (BOUNDS_MIN - origin) * inv_dir;
@@ -177,19 +247,34 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
+    // 適応ステップ・レイマーチ（doc/soap-issues.md S-11a追記）。固定刻みで
+    // AABB全体を均等に調べる素朴な実装は「泡が無い空間」も律儀に細かく
+    // サンプリングしてしまう。bounding sphereの外にいる間は
+    // nearest_bound_distance() が返す「安全にジャンプできる距離」だけ
+    // 一気に進み、少なくとも1つのbounding sphere内部に入ってから初めて
+    // FINE_STEP刻みで実際の密度を評価する。
     let max_steps = i32(view.raymarch_steps);
-    let step_size = (t_max - t) / f32(max_steps);
     var hit = false;
     var hit_pos = origin;
 
     for (var step = 0; step < max_steps; step = step + 1) {
+        if (t >= t_max) {
+            break;
+        }
         let sample_pos = origin + direction * t;
-        if (scene_density(sample_pos) > DENSITY_THRESHOLD) {
+
+        let empty_dist = nearest_bound_distance(sample_pos);
+        if (empty_dist > MIN_MARCH_STEP) {
+            t = t + max(empty_dist, MIN_MARCH_STEP);
+            continue;
+        }
+
+        if (scene_density(sample_pos, true) > DENSITY_THRESHOLD) {
             hit = true;
             hit_pos = sample_pos;
             break;
         }
-        t = t + step_size;
+        t = t + FINE_STEP;
     }
 
     if (!hit) {
@@ -197,10 +282,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let eps = 0.03;
+    // 法線は真の合計値の差分から求める（early_exit=false、上のコメント参照）。
     let normal = normalize(vec3<f32>(
-        scene_density(hit_pos + vec3<f32>(eps, 0.0, 0.0)) - scene_density(hit_pos - vec3<f32>(eps, 0.0, 0.0)),
-        scene_density(hit_pos + vec3<f32>(0.0, eps, 0.0)) - scene_density(hit_pos - vec3<f32>(0.0, eps, 0.0)),
-        scene_density(hit_pos + vec3<f32>(0.0, 0.0, eps)) - scene_density(hit_pos - vec3<f32>(0.0, 0.0, eps))
+        scene_density(hit_pos + vec3<f32>(eps, 0.0, 0.0), false) - scene_density(hit_pos - vec3<f32>(eps, 0.0, 0.0), false),
+        scene_density(hit_pos + vec3<f32>(0.0, eps, 0.0), false) - scene_density(hit_pos - vec3<f32>(0.0, eps, 0.0), false),
+        scene_density(hit_pos + vec3<f32>(0.0, 0.0, eps), false) - scene_density(hit_pos - vec3<f32>(0.0, 0.0, eps), false)
     ) * -1.0);
 
     let light_dir = normalize(vec3<f32>(0.3, 0.8, 0.4));
