@@ -100,7 +100,14 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (inst.state == STATE_FLYING) {
         // 位置・速度はAvianが解いたものをそのまま使う（このシェーダーは
         // 重力を積分しない）。ここでは「地面に着いたか」だけ判定する。
-        if (inst.position.y <= sim_params.table_height) {
+        //
+        // 課題S-14：ここを`inst.position.y <= sim_params.table_height`
+        // （中心Yが0以下）で判定していたが、Avianの球コライダーは床に
+        // めり込まないため、静止時の中心の高さは半径分だけ浮いた
+        // `table_height + base_radius`になる。中心が0以下になることは
+        // 実質起こらず、STATE_IMPACTへ一切遷移せずに永遠にFLYING＝
+        // 真ん丸のまま跳ね続けていた。自身の半径を考慮して判定する。
+        if (inst.position.y <= sim_params.table_height + inst.base_radius + 0.02) {
             inst.state = STATE_IMPACT;
         }
     } else if (inst.state == STATE_IMPACT) {

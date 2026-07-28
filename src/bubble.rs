@@ -40,7 +40,8 @@ pub struct FoamGpuBinding {
 }
 
 /// GPU Foam Instance Poolの空きスロット管理。Main World側（このBubble
-/// エンティティ自身）が対応表を持つので、こちらは「今どのスロットが空いているか」
+/// エンティティ自身）が対応表を持つので、
+/// こちらは「今どのスロットが空いているか」
 /// だけを覚えていればよい（doc第31節）。
 #[derive(Resource)]
 pub struct FoamSlotAllocator {
@@ -57,7 +58,8 @@ impl Default for FoamSlotAllocator {
 impl FoamSlotAllocator {
     /// `quality.max_aggregates`（GPU Instance Poolの物理容量512とは独立な、
     /// 品質段階ごとの同時表示上限）に達していたらスロットを払い出さない
-    /// （doc/soap-issues.md S-11a）。Poolの容量そのものは常に512のまま変えない。
+    /// （doc/soap-issues.md
+    /// S-11a）。Poolの容量そのものは常に512のまま変えない。
     fn allocate(&mut self, quality: FoamQualityProfile) -> Option<FoamGpuBinding> {
         let active = FOAM_INSTANCE_POOL_SIZE - self.free_slots.len() as u32;
         if active >= quality.max_aggregates {

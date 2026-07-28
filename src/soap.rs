@@ -1,26 +1,30 @@
 //! リアルタイム・ハンドソープ表現（doc/soap-model.md、特に第27〜28,31節）。
 //!
-//! `bubble.rs` はゲームロジック（Avian3Dによる当たり判定・ダメージ・足止め）に加えて、
+//! `bubble.rs`
+//! はゲームロジック（Avian3Dによる当たり判定・ダメージ・足止め）に加えて、
 //! GPU側スロットの割当（`FoamSlotAllocator`）と「どのBubbleがどのスロットか」という
-//! 対応（`FoamGpuBinding`コンポーネント）も持つ。この`FoamGpuBinding`が付いている
-//! Bubbleエンティティを毎フレーム観測し、GPU常駐のFoam Instance Poolを
+//! 対応（`FoamGpuBinding`コンポーネント）も持つ。
+//! この`FoamGpuBinding`が付いている Bubbleエンティティを毎フレーム観測し、
+//! GPU常駐のFoam Instance Poolを
 //! コンピュートシェーダーで「着弾扁平化→広がり」というレオロジー（見た目の変形）
 //! だけ更新し、Metaballレイマーチで「ぬちゃっと広がる泡」として描画するのがこのファイル。
 //!
-//! 重力・地面接触の物理そのものはAvian3D（`bubble.rs`）が一元的に解く。以前はここで
-//! 重力を独自に積分しており、`main.rs`のGravityリソースと無関係な別の重力定数を
-//! 抱えてしまっていた（doc/soap-issues.md S-09）。CPUは毎フレーム全粒子を転送しない
-//! （doc第2.1〜2.2節）——ただし「毎フレーム転送しない」のはPoolの全スロットの話であり、
-//! 実際に生きているBubbleエンティティ（せいぜい数個）の位置・速度を毎フレーム送るのは
-//! 許容範囲内である（doc第28.2節）。
+//! 重力・地面接触の物理そのものはAvian3D（`bubble.rs`）が一元的に解く。
+//! 以前はここで 重力を独自に積分しており、`main.
+//! rs`のGravityリソースと無関係な別の重力定数を 抱えてしまっていた（doc/
+//! soap-issues.md S-09）。CPUは毎フレーム全粒子を転送しない （doc第2.1〜2.
+//! 2節）——ただし「毎フレーム転送しない」のはPoolの全スロットの話であり、
+//! 実際に生きているBubbleエンティティ（せいぜい数個）の位置・
+//! 速度を毎フレーム送るのは 許容範囲内である（doc第28.2節）。
 //!
 //! GPU側の1スロットは「泡粒子」ではなく「1個のFoam Aggregateの見た目の状態」を
-//! 保持するので、`GpuParticle`/`Particle`ではなく`FoamInstance`と呼ぶ（doc第31節）。
+//! 保持するので、`GpuParticle`/
+//! `Particle`ではなく`FoamInstance`と呼ぶ（doc第31節）。
 
 use avian3d::prelude::*;
-use bevy::core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d, CORE_3D_DEPTH_FORMAT};
-use bevy::ecs::system::lifetimeless::SRes;
+use bevy::core_pipeline::core_3d::{CORE_3D_DEPTH_FORMAT, Transparent3d, TransparentSortingInfo3d};
 use bevy::ecs::system::SystemParamItem;
+use bevy::ecs::system::lifetimeless::SRes;
 use bevy::prelude::*;
 use bevy::render::render_phase::{
     AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
@@ -28,7 +32,9 @@ use bevy::render::render_phase::{
 };
 use bevy::render::render_resource::encase::StorageBuffer as EncaseBuffer;
 use bevy::render::render_resource::{binding_types, *};
-use bevy::render::renderer::{RenderContext, RenderDevice, RenderGraph, RenderGraphSystems, RenderQueue};
+use bevy::render::renderer::{
+    RenderContext, RenderDevice, RenderGraph, RenderGraphSystems, RenderQueue,
+};
 use bevy::render::sync_world::MainEntity;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
@@ -137,7 +143,8 @@ struct SoapViewUniform {
     camera_world_position: Vec3,
     /// Foam Quality（doc/soap-issues.md S-11a）に応じたレイマーチのステップ数。
     raymarch_steps: u32,
-    /// MicrostructureQuality::as_u32() のエンコードと対応（soap_render.wgsl参照）。
+    /// MicrostructureQuality::as_u32()
+    /// のエンコードと対応（soap_render.wgsl参照）。
     microstructure_quality: u32,
     /// `active_slots`（下記）の実際に有効な要素数（課題S-12）。
     active_count: u32,
@@ -201,7 +208,8 @@ struct SoapGpuResources {
     compute_layout: BindGroupLayoutDescriptor,
     render_layout: BindGroupLayoutDescriptor,
     compute_pipeline: CachedComputePipelineId,
-    /// 実際のビュー出力フォーマットが分かるQueue段階まで遅延生成する（Phase 1: 単一カメラ前提）。
+    /// 実際のビュー出力フォーマットが分かるQueue段階まで遅延生成する（Phase 1:
+    /// 単一カメラ前提）。
     render_pipeline: Option<CachedRenderPipelineId>,
     render_shader: Handle<Shader>,
 }
@@ -234,7 +242,8 @@ fn init_soap_render_resources(
             binding_types::uniform_buffer::<SimParams>(false),
         ),
     );
-    let compute_layout = BindGroupLayoutDescriptor::new("soap_compute_layout", &compute_layout_entries);
+    let compute_layout =
+        BindGroupLayoutDescriptor::new("soap_compute_layout", &compute_layout_entries);
 
     let render_layout_entries = BindGroupLayoutEntries::sequential(
         ShaderStages::FRAGMENT,
@@ -250,7 +259,8 @@ fn init_soap_render_resources(
             binding_types::storage_buffer_read_only::<u32>(false),
         ),
     );
-    let render_layout = BindGroupLayoutDescriptor::new("soap_render_layout", &render_layout_entries);
+    let render_layout =
+        BindGroupLayoutDescriptor::new("soap_render_layout", &render_layout_entries);
 
     let compute_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: Some("soap_simulate_pipeline".into()),
@@ -352,7 +362,8 @@ fn prepare_foam_drive_queue(
 
     if drive_queue.0.get().is_empty() {
         // ゼロサイズのストレージバッファを作らないためのダミーエントリ
-        // （target_slotは実在しないインデックスなので、compute shader側では何にもマッチしない）。
+        // （target_slotは実在しないインデックスなので、compute
+        // shader側では何にもマッチしない）。
         drive_queue.0.get_mut().push(GpuDriveEntry {
             target_slot: u32::MAX,
             position: Vec3::ZERO,
@@ -416,7 +427,11 @@ fn prepare_soap_bind_groups(
     let compute = render_device.create_bind_group(
         Some("soap_compute_bind_group"),
         &compute_layout,
-        &BindGroupEntries::sequential((gpu.foam_instance_pool.as_entire_binding(), drive_binding, sim_binding)),
+        &BindGroupEntries::sequential((
+            gpu.foam_instance_pool.as_entire_binding(),
+            drive_binding,
+            sim_binding,
+        )),
     );
 
     let render_layout = pipeline_cache.get_bind_group_layout(&gpu.render_layout);
@@ -434,7 +449,8 @@ fn prepare_soap_bind_groups(
 }
 
 // ---------------------------------------------------------------------------
-// Compute Dispatch（doc第23節：RenderGraphSystems::Begin、ビュー非依存で1フレーム1回）。
+// Compute Dispatch（doc第23節：RenderGraphSystems::Begin、
+// ビュー非依存で1フレーム1回）。
 // ---------------------------------------------------------------------------
 
 fn simulate_foam_instances(
@@ -444,7 +460,8 @@ fn simulate_foam_instances(
     bind_groups: Option<Res<SoapBindGroups>>,
     extracted: Res<ExtractedFoamAggregates>,
 ) {
-    // 課題S-05：今生きているFoam Aggregateが1つも無ければDispatch自体をスキップする。
+    // 課題S-05：今生きているFoam
+    // Aggregateが1つも無ければDispatch自体をスキップする。
     if extracted.0.is_empty() {
         return;
     }

@@ -3,7 +3,7 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::bubble::{spawn_bubble, FoamSlotAllocator};
+use crate::bubble::{FoamSlotAllocator, spawn_bubble};
 use crate::consts::*;
 use crate::quality::{FoamQualityProfile, FoamQualitySetting};
 use crate::state::GameState;
@@ -101,7 +101,13 @@ fn handle_charge_input(
 
     if keyboard.just_released(KeyCode::Space) && charge.charging {
         let fraction = (charge.time / CHARGE_MAX_TIME).clamp(0.0, 1.0);
-        fire_bubble(&mut commands, &mut foam_allocator, foam_quality.0.profile(), aim.direction(), fraction);
+        fire_bubble(
+            &mut commands,
+            &mut foam_allocator,
+            foam_quality.0.profile(),
+            aim.direction(),
+            fraction,
+        );
         charge.charging = false;
         charge.time = 0.0;
     }
@@ -132,5 +138,13 @@ fn fire_bubble(
     // Avian3Dの当たり判定を持つBubbleを発射する。見た目（soap.rs）はこの
     // Bubbleエンティティの位置・速度を毎フレーム自動で観測するので、ここから
     // 別途何かを送信する必要はない（doc/soap-model.md 第28節）。
-    spawn_bubble(commands, foam_allocator, foam_quality_profile, spawn_pos, velocity, radius, power);
+    spawn_bubble(
+        commands,
+        foam_allocator,
+        foam_quality_profile,
+        spawn_pos,
+        velocity,
+        radius,
+        power,
+    );
 }

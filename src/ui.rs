@@ -93,7 +93,8 @@ fn setup_hud(mut commands: Commands) {
             });
         });
 
-    // 右下：FPS/フレームタイム/Foam数/品質（実機ベンチマーク用、doc/soap-issues.md S-11a）。
+    // 右下：FPS/フレームタイム/Foam数/品質（実機ベンチマーク用、doc/soap-issues.md
+    // S-11a）。
     commands
         .spawn(Node {
             width: Val::Percent(100.0),
@@ -147,9 +148,12 @@ fn update_stats_text(
 ) {
     let Ok(mut text) = query.single_mut() else { return };
 
-    let fps = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
-    let frame_ms =
-        diagnostics.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME).and_then(|d| d.smoothed()).unwrap_or(0.0);
+    let fps =
+        diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
+    let frame_ms = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
     let foam_count = foam_aggregates.iter().count();
 
     text.0 = format!(

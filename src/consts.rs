@@ -32,9 +32,11 @@ pub const BUBBLE_MAX_RADIUS: f32 = 0.55;
 /// 泡の寿命（秒）。当たらなくても時間切れで消える。
 pub const BUBBLE_LIFETIME: f32 = 6.0;
 
-/// GPU側でFoam Aggregateの見た目を同時に表現できる最大数（doc/soap-model.md 第28.2節）。
-/// `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render World、GPUバッファ確保）の
-/// 両方がこの値を共有する（2箇所に独立した定数を置いて食い違わせない、S-09の教訓）。
+/// GPU側でFoam Aggregateの見た目を同時に表現できる最大数（doc/soap-model.md
+/// 第28.2節）。 `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render
+/// World、GPUバッファ確保）の
+/// 両方がこの値を共有する（2箇所に独立した定数を置いて食い違わせない、
+/// S-09の教訓）。
 pub const FOAM_INSTANCE_POOL_SIZE: u32 = 512;
 
 /// 敵が泡に埋もれている間の鈍足倍率と、接触が切れてから鈍足が続く猶予秒数。

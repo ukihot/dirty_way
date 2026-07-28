@@ -68,7 +68,8 @@ pub enum MicrostructureQuality {
 }
 
 impl MicrostructureQuality {
-    /// WGSL側にu32として渡すためのエンコード（soap_render.wgslの同名定数と対応）。
+    /// WGSL側にu32として渡すためのエンコード（soap_render.
+    /// wgslの同名定数と対応）。
     pub fn as_u32(self) -> u32 {
         match self {
             MicrostructureQuality::Simple => 0,
@@ -107,7 +108,10 @@ impl Plugin for QualityPlugin {
 /// 暫定デバッグUI：1/2/3/4キーでLow/Medium/High/Cinematicを直接切り替える。
 /// 実機ベンチマーク（どのGPUでどのQualityが成立するか）を取るための、
 /// 設定画面ができるまでの代用。
-fn handle_quality_hotkeys(keyboard: Res<ButtonInput<KeyCode>>, mut quality: ResMut<FoamQualitySetting>) {
+fn handle_quality_hotkeys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut quality: ResMut<FoamQualitySetting>,
+) {
     if keyboard.just_pressed(KeyCode::Digit1) {
         quality.0 = FoamQuality::Low;
     } else if keyboard.just_pressed(KeyCode::Digit2) {

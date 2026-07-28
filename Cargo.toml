@@ -3,6 +3,13 @@ name = "dirty_way"
 version = "0.1.0"
 edition = "2024"
 
+# `cargo run --features dev` で有効化する開発反復用の高速リンク。
+# bevy_dylib経由でBevy本体を動的リンクにし、自分のコードだけを直した時の
+# 再リンク時間を大幅に短縮する（Bevy公式のQuick Startで案内されている定番設定）。
+# 通常の `cargo run`/`cargo build`（実機ベンチマーク時など）には影響しない。
+[features]
+dev = ["bevy/dynamic_linking"]
+
 [dependencies]
 # bevy_gilrs（ゲームパッド入力）は、依存する windows クレートのバージョンが
 # wgpu-hal 側と衝突し Windows で実質ビルド不可になるため無効化。
@@ -37,3 +44,13 @@ bevy = { version = "0.19.0", default-features = false, features = [
 ] }
 avian3d = "0.7.0"      # 3D物理演算（旧 bevy_xpbd）
 rand = "0.8"            # 敵の出現角度・種類やブレの乱数
+
+# Bevy公式が推奨するdevプロファイル調整。opt-level=0（デフォルト）のままだと
+# Bevy/wgpu/avianが最適化なしで動くため、コンパイルだけでなく実行時speed
+# （FPS計測含む）も不必要に遅くなる。依存クレート側は一度opt-level=3で
+# ビルドされればキャッシュされ、以後は自分のクレートだけの再ビルドで済む。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
