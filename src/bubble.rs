@@ -102,14 +102,16 @@ pub fn spawn_bubble(
         Bubble { power, life: 0.0, radius, hit_enemies: Vec::new() },
         RigidBody::Dynamic,
         Collider::sphere(radius),
-        // 泡の見た目（soap.rs）はもう「跳ねるボール」ではなく「着地して潰れる
-        // 泡の塊」として描画される。跳ね返りが大きいと、Compute Shader側で
-        // 空中に戻ったかどうかを再判定する必要が出て複雑になるため、反発は
-        // 低く抑えて実質1回で着地・扁平化させる（doc/soap-model.md 第28.1節）。
-        Restitution::new(0.12),
-        Friction::new(0.05),
-        LinearDamping(0.15),
-        AngularDamping(0.4),
+        // 泡の見た目（soap.rs）は「跳ねるボール」ではなく「着地して潰れる
+        // 泡の塊」として描画したい。Restitution=0.12/Friction=0.05という
+        // 旧設定は、実際に動かすと「ごつんと弾んで転がる硬いボール」に感じ
+        // られてしまっていた（doc/soap-issues.md S-15）。ハンドソープらしい
+        // 「その場でぺたっと潰れて止まる」感触にするため、反発をほぼ0にし、
+        // 摩擦・減衰を強めて着地後ほぼ即座に静止させる。
+        Restitution::new(0.02),
+        Friction::new(0.7),
+        LinearDamping(0.3),
+        AngularDamping(0.8),
         LinearVelocity(velocity),
         Transform::from_translation(position),
     ));
