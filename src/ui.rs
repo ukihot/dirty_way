@@ -1,7 +1,10 @@
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 
+use crate::bubble::FoamGpuBinding;
 use crate::consts::CHARGE_MAX_TIME;
 use crate::player::Charge;
+use crate::quality::FoamQualitySetting;
 use crate::state::{GameState, Health, Score};
 
 #[derive(Component)]
@@ -10,6 +13,8 @@ struct ScoreText;
 struct HealthText;
 #[derive(Component)]
 struct ChargeBarFill;
+#[derive(Component)]
+struct StatsText;
 #[derive(Component)]
 struct GameOverUi;
 
@@ -23,6 +28,9 @@ impl Plugin for HudPlugin {
                 (update_score_text, update_health_text, update_charge_bar)
                     .run_if(in_state(GameState::Playing)),
             )
+            // FPS/Foam数などのベンチマーク表示（doc/soap-issues.md S-11a）は
+            // GameOver中も見えていた方が都合が良いので、Playing限定にしない。
+            .add_systems(Update, update_stats_text)
             .add_systems(OnEnter(GameState::GameOver), spawn_game_over_ui)
             .add_systems(OnEnter(GameState::Playing), despawn_game_over_ui);
     }
@@ -84,6 +92,26 @@ fn setup_hud(mut commands: Commands) {
                 ));
             });
         });
+
+    // 右下：FPS/フレームタイム/Foam数/品質（実機ベンチマーク用、doc/soap-issues.md S-11a）。
+    commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::FlexEnd,
+            align_items: AlignItems::FlexEnd,
+            padding: UiRect::all(Val::Px(12.0)),
+            ..default()
+        })
+        .with_children(|root| {
+            root.spawn((
+                StatsText,
+                Text::new("FPS: --\nFrame: -- ms\nFoam: --\nQuality: --"),
+                TextFont { font_size: FontSize::Px(16.0), ..default() },
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.8)),
+            ));
+        });
 }
 
 fn update_score_text(score: Res<Score>, mut query: Query<&mut Text, With<ScoreText>>) {
@@ -109,6 +137,28 @@ fn update_charge_bar(charge: Res<Charge>, mut query: Query<&mut Node, With<Charg
     if let Ok(mut node) = query.single_mut() {
         node.width = Val::Percent(if charge.charging { fraction } else { 0.0 });
     }
+}
+
+fn update_stats_text(
+    diagnostics: Res<DiagnosticsStore>,
+    foam_aggregates: Query<(), With<FoamGpuBinding>>,
+    quality: Res<FoamQualitySetting>,
+    mut query: Query<&mut Text, With<StatsText>>,
+) {
+    let Ok(mut text) = query.single_mut() else { return };
+
+    let fps = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
+    let frame_ms =
+        diagnostics.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME).and_then(|d| d.smoothed()).unwrap_or(0.0);
+    let foam_count = foam_aggregates.iter().count();
+
+    text.0 = format!(
+        "FPS: {:.1}\nFrame: {:.1} ms\nFoam: {}\nQuality: {}",
+        fps,
+        frame_ms,
+        foam_count,
+        quality.0.label()
+    );
 }
 
 fn spawn_game_over_ui(mut commands: Commands, score: Res<Score>) {

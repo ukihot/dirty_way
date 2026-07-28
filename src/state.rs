@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::bubble::Bubble;
+use crate::bubble::{Bubble, FoamGpuBinding, FoamSlotAllocator};
 use crate::consts::PLAYER_MAX_HEALTH;
 use crate::enemy::{Enemy, EnemySpawnTimer};
 use crate::player::Charge;
@@ -43,8 +43,9 @@ fn reset_game(
     mut health: ResMut<Health>,
     mut charge: ResMut<Charge>,
     mut spawn_timer: ResMut<EnemySpawnTimer>,
+    mut foam_allocator: ResMut<FoamSlotAllocator>,
     enemies: Query<Entity, With<Enemy>>,
-    bubbles: Query<Entity, With<Bubble>>,
+    bubbles: Query<(Entity, Option<&FoamGpuBinding>), With<Bubble>>,
 ) {
     score.0 = 0;
     *health = Health::default();
@@ -54,7 +55,13 @@ fn reset_game(
     for entity in &enemies {
         commands.entity(entity).despawn();
     }
-    for entity in &bubbles {
+    for (entity, binding) in &bubbles {
+        // GPUスロットも解放する。世代カウンタ（FoamGpuBinding::generation）のおかげで、
+        // 再利用されたスロットにGPU側の古い変形状態が残っていても新規スポーンとして
+        // 正しく初期化し直される（doc/soap-issues.md S-10）。
+        if let Some(binding) = binding {
+            foam_allocator.release(binding);
+        }
         commands.entity(entity).despawn();
     }
 }

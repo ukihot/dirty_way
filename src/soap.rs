@@ -1,11 +1,23 @@
-//! リアルタイム・ハンドソープ表現（doc/soap-model.md）。
+//! リアルタイム・ハンドソープ表現（doc/soap-model.md、特に第27〜28,31節）。
 //!
-//! `bubble.rs` はゲームロジック（Avian3Dによる当たり判定・ダメージ・足止め）だけを
-//! 担当し、見た目は持たない。こちらはGPU常駐のParticle Poolをコンピュートシェーダーで
-//! 弾道飛翔→着弾扁平化→広がりのステートマシンで更新し、Metaballレイマーチで
-//! 「ぬちゃっと広がる液体」として描画する。CPUは毎フレーム全粒子を転送しない
-//! （doc第2.1〜2.2節）。
+//! `bubble.rs` はゲームロジック（Avian3Dによる当たり判定・ダメージ・足止め）に加えて、
+//! GPU側スロットの割当（`FoamSlotAllocator`）と「どのBubbleがどのスロットか」という
+//! 対応（`FoamGpuBinding`コンポーネント）も持つ。この`FoamGpuBinding`が付いている
+//! Bubbleエンティティを毎フレーム観測し、GPU常駐のFoam Instance Poolを
+//! コンピュートシェーダーで「着弾扁平化→広がり」というレオロジー（見た目の変形）
+//! だけ更新し、Metaballレイマーチで「ぬちゃっと広がる泡」として描画するのがこのファイル。
+//!
+//! 重力・地面接触の物理そのものはAvian3D（`bubble.rs`）が一元的に解く。以前はここで
+//! 重力を独自に積分しており、`main.rs`のGravityリソースと無関係な別の重力定数を
+//! 抱えてしまっていた（doc/soap-issues.md S-09）。CPUは毎フレーム全粒子を転送しない
+//! （doc第2.1〜2.2節）——ただし「毎フレーム転送しない」のはPoolの全スロットの話であり、
+//! 実際に生きているBubbleエンティティ（せいぜい数個）の位置・速度を毎フレーム送るのは
+//! 許容範囲内である（doc第28.2節）。
+//!
+//! GPU側の1スロットは「泡粒子」ではなく「1個のFoam Aggregateの見た目の状態」を
+//! 保持するので、`GpuParticle`/`Particle`ではなく`FoamInstance`と呼ぶ（doc第31節）。
 
+use avian3d::prelude::*;
 use bevy::core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d, CORE_3D_DEPTH_FORMAT};
 use bevy::ecs::system::lifetimeless::SRes;
 use bevy::ecs::system::SystemParamItem;
@@ -20,26 +32,15 @@ use bevy::render::renderer::{RenderContext, RenderDevice, RenderGraph, RenderGra
 use bevy::render::sync_world::MainEntity;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
-use rand::Rng;
 
-/// Phase 1のGPU常駐Particle Poolの固定サイズ（doc第5節：100〜1024を想定）。
-const PARTICLE_POOL_SIZE: u32 = 256;
-
-/// Main World側から発射される、1回の「ハンドソープ押下」のリクエスト（doc第4,7節）。
-#[derive(Message, Clone, Copy)]
-pub struct SoapSpawnRequest {
-    pub position: Vec3,
-    pub direction: Vec3,
-    pub pressure: f32,
-    pub amount: u32,
-}
+use crate::bubble::{Bubble, FoamGpuBinding};
+use crate::consts::FOAM_INSTANCE_POOL_SIZE;
+use crate::quality::{FoamQuality, FoamQualitySetting};
 
 pub struct SoapPlugin;
 
 impl Plugin for SoapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<SoapSpawnRequest>();
-
         let compute_handle = {
             let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
             shaders.add(Shader::from_wgsl(
@@ -63,23 +64,23 @@ impl Plugin for SoapPlugin {
 
         render_app
             .insert_resource(shaders)
-            .init_resource::<ExtractedSoapSpawnRequests>()
-            .init_resource::<NextSlotCursor>()
-            .init_resource::<SoapSpawnQueue>()
+            .init_resource::<ExtractedFoamAggregates>()
+            .init_resource::<ExtractedFoamQuality>()
+            .init_resource::<FoamDriveQueue>()
             .init_resource::<SoapSimParamsBuffer>()
             .init_resource::<SoapViewUniformBuffer>()
-            .add_systems(ExtractSchedule, extract_soap_spawn_requests)
+            .add_systems(ExtractSchedule, (extract_foam_aggregates, extract_foam_quality))
             .add_systems(RenderStartup, init_soap_render_resources)
             .add_systems(
                 Render,
                 (
                     prepare_soap_view_uniform.in_set(RenderSystems::PrepareResources),
-                    prepare_soap_frame_data.in_set(RenderSystems::PrepareResources),
+                    prepare_foam_drive_queue.in_set(RenderSystems::PrepareResources),
                     prepare_soap_bind_groups.in_set(RenderSystems::PrepareBindGroups),
                     queue_soap_metaballs.in_set(RenderSystems::Queue),
                 ),
             )
-            .add_systems(RenderGraph, simulate_soap_particles.in_set(RenderGraphSystems::Begin))
+            .add_systems(RenderGraph, simulate_foam_instances.in_set(RenderGraphSystems::Begin))
             .add_render_command::<Transparent3d, DrawSoapMetaballs>();
     }
 }
@@ -91,34 +92,41 @@ struct SoapShaderHandles {
 }
 
 // ---------------------------------------------------------------------------
-// GPU側データレイアウト（doc第25.1節と1:1対応。フィールド順を変えない）。
+// GPU側データレイアウト（doc第25.1,31節と1:1対応。フィールド順を変えない）。
 // ---------------------------------------------------------------------------
 
+/// GPU常駐のFoam Instance Pool 1スロット分。「泡粒子」ではなく「1個の
+/// Foam Aggregateの見た目の変形状態」を表す（doc第31節）。
 #[derive(Clone, Copy, ShaderType, Default)]
-struct GpuParticle {
+struct FoamInstance {
     position: Vec3,
     velocity: Vec3,
     scale: Vec3,
     state: u32,
     lifetime: f32,
+    base_radius: f32,
+    /// このスロットへの「今回の」割当を識別する世代番号。`FoamGpuBinding`参照。
+    generation: u32,
 }
 
+/// 「1回きりのスポーン要求」ではなく「今このBubbleはここにいる」という
+/// 毎フレームのDrive更新（doc第28.2節）。
 #[derive(Clone, Copy, ShaderType)]
-struct GpuSpawnRequest {
+struct GpuDriveEntry {
     target_slot: u32,
     position: Vec3,
     velocity: Vec3,
+    base_radius: f32,
+    generation: u32,
 }
 
 #[derive(Clone, Copy, ShaderType, Default)]
 struct SimParams {
     dt: f32,
-    gravity: f32,
     table_height: f32,
     impact_factor: f32,
-    damping: f32,
     max_spread: f32,
-    spawn_count: u32,
+    drive_count: u32,
 }
 
 #[derive(Clone, Copy, ShaderType, Default)]
@@ -126,20 +134,57 @@ struct SoapViewUniform {
     clip_from_world: Mat4,
     world_from_clip: Mat4,
     camera_world_position: Vec3,
+    /// Foam Quality（doc/soap-issues.md S-11a）に応じたレイマーチのステップ数。
+    raymarch_steps: u32,
+    /// MicrostructureQuality::as_u32() のエンコードと対応（soap_render.wgsl参照）。
+    microstructure_quality: u32,
 }
 
 // ---------------------------------------------------------------------------
-// Main World → Render World（Extract）
+// Main World → Render World（Extract）：FoamGpuBindingを持つBubbleを毎フレーム
+// 観測する。スロット割当そのものはMain World側（bubble.rs）が既に済ませて
+// いるので、ここでは「今のスロット番号」を読み取るだけでよい（doc第31節）。
 // ---------------------------------------------------------------------------
 
-#[derive(Resource, Default)]
-struct ExtractedSoapSpawnRequests(Vec<SoapSpawnRequest>);
+struct ExtractedAggregate {
+    slot: u32,
+    generation: u32,
+    position: Vec3,
+    velocity: Vec3,
+    radius: f32,
+}
 
-fn extract_soap_spawn_requests(
-    mut extracted: ResMut<ExtractedSoapSpawnRequests>,
-    mut messages: Extract<MessageReader<SoapSpawnRequest>>,
+#[derive(Resource, Default)]
+struct ExtractedFoamAggregates(Vec<ExtractedAggregate>);
+
+fn extract_foam_aggregates(
+    mut extracted: ResMut<ExtractedFoamAggregates>,
+    bubbles: Extract<Query<(&Transform, &LinearVelocity, &Bubble, &FoamGpuBinding)>>,
 ) {
-    extracted.0.extend(messages.read().copied());
+    extracted.0.clear();
+    for (transform, velocity, bubble, binding) in &bubbles {
+        extracted.0.push(ExtractedAggregate {
+            slot: binding.slot,
+            generation: binding.generation,
+            position: transform.translation,
+            velocity: velocity.0,
+            radius: bubble.radius,
+        });
+    }
+}
+
+/// 現在のFoam Quality設定（doc/soap-issues.md S-11a）。レンダリング精度
+/// （レイマーチのステップ数・Microstructureの詳細度）はここから決まる。
+/// 同時Aggregate数の上限はMain World側（`bubble.rs`の`FoamSlotAllocator`）で
+/// 既に適用済みなので、Render World側で改めて絞り込む必要はない。
+#[derive(Resource, Default, Clone, Copy)]
+struct ExtractedFoamQuality(FoamQuality);
+
+fn extract_foam_quality(
+    mut extracted: ResMut<ExtractedFoamQuality>,
+    quality: Extract<Res<FoamQualitySetting>>,
+) {
+    extracted.0 = quality.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +193,7 @@ fn extract_soap_spawn_requests(
 
 #[derive(Resource)]
 struct SoapGpuResources {
-    particle_pool: Buffer,
+    foam_instance_pool: Buffer,
     pool_capacity: u32,
     compute_layout: BindGroupLayoutDescriptor,
     render_layout: BindGroupLayoutDescriptor,
@@ -164,13 +209,13 @@ fn init_soap_render_resources(
     pipeline_cache: Res<PipelineCache>,
     shaders: Res<SoapShaderHandles>,
 ) {
-    // Particle Pool: ゼロ初期化したGPU専有バッファ。以後CPUからは書き込まない
+    // Foam Instance Pool: ゼロ初期化したGPU専有バッファ。以後CPUからは書き込まない
     // （encaseは正しいバイトサイズ・パディングを求めるためだけに使う）。
-    let zeroed = vec![GpuParticle::default(); PARTICLE_POOL_SIZE as usize];
+    let zeroed = vec![FoamInstance::default(); FOAM_INSTANCE_POOL_SIZE as usize];
     let mut init_bytes = EncaseBuffer::new(Vec::new());
-    init_bytes.write(&zeroed).expect("failed to size soap particle pool");
-    let particle_pool = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("soap_particle_pool"),
+    init_bytes.write(&zeroed).expect("failed to size soap foam instance pool");
+    let foam_instance_pool = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("soap_foam_instance_pool"),
         contents: init_bytes.as_ref(),
         usage: BufferUsages::STORAGE,
     });
@@ -178,10 +223,10 @@ fn init_soap_render_resources(
     let compute_layout_entries = BindGroupLayoutEntries::sequential(
         ShaderStages::COMPUTE,
         (
-            // @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
-            binding_types::storage_buffer::<GpuParticle>(false),
-            // @group(0) @binding(1) var<storage, read> spawn_requests: array<SpawnRequestGpu>;
-            binding_types::storage_buffer_read_only::<GpuSpawnRequest>(false),
+            // @group(0) @binding(0) var<storage, read_write> foam_instances: array<FoamInstance>;
+            binding_types::storage_buffer::<FoamInstance>(false),
+            // @group(0) @binding(1) var<storage, read> drive_entries: array<DriveEntry>;
+            binding_types::storage_buffer_read_only::<GpuDriveEntry>(false),
             // @group(0) @binding(2) var<uniform> sim_params: SimParams;
             binding_types::uniform_buffer::<SimParams>(false),
         ),
@@ -191,8 +236,8 @@ fn init_soap_render_resources(
     let render_layout_entries = BindGroupLayoutEntries::sequential(
         ShaderStages::FRAGMENT,
         (
-            // @group(0) @binding(0) var<storage, read> particles: array<Particle>;
-            binding_types::storage_buffer_read_only::<GpuParticle>(false),
+            // @group(0) @binding(0) var<storage, read> foam_instances: array<FoamInstance>;
+            binding_types::storage_buffer_read_only::<FoamInstance>(false),
             // @group(0) @binding(1) var<uniform> view: SoapView;
             binding_types::uniform_buffer::<SoapViewUniform>(false),
         ),
@@ -210,8 +255,8 @@ fn init_soap_render_resources(
     });
 
     commands.insert_resource(SoapGpuResources {
-        particle_pool,
-        pool_capacity: PARTICLE_POOL_SIZE,
+        foam_instance_pool,
+        pool_capacity: FOAM_INSTANCE_POOL_SIZE,
         compute_layout,
         render_layout,
         compute_pipeline,
@@ -221,14 +266,12 @@ fn init_soap_render_resources(
 }
 
 // ---------------------------------------------------------------------------
-// 毎フレームのPrepare（doc第22節：Extract→Prepare経路、リングカーソル方式）。
+// 毎フレームのPrepare。スロット割当はMain World側（bubble.rs）が既に済ませて
+// いるので、ここはExtractした状態をそのままGPUへ転送するだけ（doc第31節）。
 // ---------------------------------------------------------------------------
 
 #[derive(Resource, Default)]
-struct NextSlotCursor(u32);
-
-#[derive(Resource, Default)]
-struct SoapSpawnQueue(StorageBuffer<Vec<GpuSpawnRequest>>);
+struct FoamDriveQueue(StorageBuffer<Vec<GpuDriveEntry>>);
 
 #[derive(Resource, Default)]
 struct SoapSimParamsBuffer(UniformBuffer<SimParams>);
@@ -246,7 +289,9 @@ fn prepare_soap_view_uniform(
     // Viewを掴んでしまい、レイの原点・方向が完全に破綻する（第23節の
     // 「Phase 1: カメラ1台固定」はViewTargetを持つ実際の描画カメラに限定する）。
     views: Query<&ExtractedView, With<ViewTarget>>,
+    quality: Res<ExtractedFoamQuality>,
 ) {
+    let profile = quality.0.profile();
     // Phase 1: カメラ1台固定という前提（doc第23節と同じ簡略化）。
     if let Some(view) = views.iter().next() {
         let clip_from_world = view
@@ -256,71 +301,56 @@ fn prepare_soap_view_uniform(
             clip_from_world,
             world_from_clip: clip_from_world.inverse(),
             camera_world_position: view.world_from_view.translation(),
+            raymarch_steps: profile.raymarch_steps,
+            microstructure_quality: profile.microstructure_quality.as_u32(),
         });
     }
     buffer.0.write_buffer(&render_device, &render_queue);
 }
 
-fn prepare_soap_frame_data(
-    mut extracted: ResMut<ExtractedSoapSpawnRequests>,
-    mut cursor: ResMut<NextSlotCursor>,
-    mut spawn_queue: ResMut<SoapSpawnQueue>,
+fn prepare_foam_drive_queue(
+    extracted: Res<ExtractedFoamAggregates>,
+    mut drive_queue: ResMut<FoamDriveQueue>,
     mut sim_params: ResMut<SoapSimParamsBuffer>,
-    gpu: Res<SoapGpuResources>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     time: Res<Time>,
 ) {
-    spawn_queue.0.get_mut().clear();
+    drive_queue.0.get_mut().clear();
 
-    let mut rng = rand::thread_rng();
-    for request in extracted.0.drain(..) {
-        for _ in 0..request.amount {
-            let slot = cursor.0;
-            cursor.0 = (cursor.0 + 1) % gpu.pool_capacity;
-
-            // 各粒子に小さなランダム性を与える（doc第7節）。全粒子が完全に同一だと
-            // レーザーのような直線的な液体になってしまうため避ける。
-            let offset = Vec3::new(
-                rng.gen_range(-0.15f32..0.15),
-                rng.gen_range(-0.05f32..0.05),
-                rng.gen_range(-0.15f32..0.15),
-            );
-            let scatter = Vec3::new(
-                rng.gen_range(-0.6f32..0.6),
-                rng.gen_range(-0.3f32..0.3),
-                rng.gen_range(-0.6f32..0.6),
-            );
-
-            spawn_queue.0.get_mut().push(GpuSpawnRequest {
-                target_slot: slot,
-                position: request.position + offset,
-                velocity: request.direction * request.pressure + scatter,
-            });
-        }
-    }
-
-    if spawn_queue.0.get().is_empty() {
-        // ゼロサイズのストレージバッファを作らないためのダミーエントリ
-        // （target_slotは実在しないインデックスなので、compute shader側では何にもマッチしない）。
-        spawn_queue.0.get_mut().push(GpuSpawnRequest {
-            target_slot: u32::MAX,
-            position: Vec3::ZERO,
-            velocity: Vec3::ZERO,
+    for aggregate in &extracted.0 {
+        drive_queue.0.get_mut().push(GpuDriveEntry {
+            target_slot: aggregate.slot,
+            position: aggregate.position,
+            velocity: aggregate.velocity,
+            base_radius: aggregate.radius,
+            generation: aggregate.generation,
         });
     }
 
-    let spawn_count = spawn_queue.0.get().len() as u32;
-    spawn_queue.0.write_buffer(&render_device, &render_queue);
+    if drive_queue.0.get().is_empty() {
+        // ゼロサイズのストレージバッファを作らないためのダミーエントリ
+        // （target_slotは実在しないインデックスなので、compute shader側では何にもマッチしない）。
+        drive_queue.0.get_mut().push(GpuDriveEntry {
+            target_slot: u32::MAX,
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            base_radius: 0.0,
+            generation: 0,
+        });
+    }
+
+    let drive_count = drive_queue.0.get().len() as u32;
+    drive_queue.0.write_buffer(&render_device, &render_queue);
 
     sim_params.0.set(SimParams {
         dt: time.delta_secs(),
-        gravity: 14.0,
         table_height: 0.0,
         impact_factor: 0.12,
-        damping: 0.85,
-        max_spread: 2.2,
-        spawn_count,
+        // 課題S-01：自然な到達範囲（1.73〜2.25程度）より十分高くして、
+        // 着弾速度差がそのまま最終形状差として残るようにする。
+        max_spread: 3.4,
+        drive_count,
     });
     sim_params.0.write_buffer(&render_device, &render_queue);
 }
@@ -340,12 +370,12 @@ fn prepare_soap_bind_groups(
     render_device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,
     gpu: Res<SoapGpuResources>,
-    spawn_queue: Res<SoapSpawnQueue>,
+    drive_queue: Res<FoamDriveQueue>,
     sim_params: Res<SoapSimParamsBuffer>,
     view_uniform: Res<SoapViewUniformBuffer>,
 ) {
-    let (Some(spawn_binding), Some(sim_binding), Some(view_binding)) =
-        (spawn_queue.0.binding(), sim_params.0.binding(), view_uniform.0.binding())
+    let (Some(drive_binding), Some(sim_binding), Some(view_binding)) =
+        (drive_queue.0.binding(), sim_params.0.binding(), view_uniform.0.binding())
     else {
         return;
     };
@@ -354,14 +384,14 @@ fn prepare_soap_bind_groups(
     let compute = render_device.create_bind_group(
         Some("soap_compute_bind_group"),
         &compute_layout,
-        &BindGroupEntries::sequential((gpu.particle_pool.as_entire_binding(), spawn_binding, sim_binding)),
+        &BindGroupEntries::sequential((gpu.foam_instance_pool.as_entire_binding(), drive_binding, sim_binding)),
     );
 
     let render_layout = pipeline_cache.get_bind_group_layout(&gpu.render_layout);
     let render = render_device.create_bind_group(
         Some("soap_render_bind_group"),
         &render_layout,
-        &BindGroupEntries::sequential((gpu.particle_pool.as_entire_binding(), view_binding)),
+        &BindGroupEntries::sequential((gpu.foam_instance_pool.as_entire_binding(), view_binding)),
     );
 
     commands.insert_resource(SoapBindGroups { compute, render });
@@ -371,12 +401,17 @@ fn prepare_soap_bind_groups(
 // Compute Dispatch（doc第23節：RenderGraphSystems::Begin、ビュー非依存で1フレーム1回）。
 // ---------------------------------------------------------------------------
 
-fn simulate_soap_particles(
+fn simulate_foam_instances(
     mut render_context: RenderContext,
     pipeline_cache: Res<PipelineCache>,
     gpu: Res<SoapGpuResources>,
     bind_groups: Option<Res<SoapBindGroups>>,
+    extracted: Res<ExtractedFoamAggregates>,
 ) {
+    // 課題S-05：今生きているFoam Aggregateが1つも無ければDispatch自体をスキップする。
+    if extracted.0.is_empty() {
+        return;
+    }
     let Some(bind_groups) = bind_groups else { return };
     let Some(pipeline) = pipeline_cache.get_compute_pipeline(gpu.compute_pipeline) else { return };
 
@@ -400,7 +435,14 @@ fn queue_soap_metaballs(
     mut gpu: ResMut<SoapGpuResources>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<(Entity, &ExtractedView, &ViewTarget)>,
+    extracted: Res<ExtractedFoamAggregates>,
 ) {
+    // 課題S-05：今生きているFoam Aggregateが1つも無ければ、画面全体に対する
+    // レイマーチ自体を丸ごとスキップする。
+    if extracted.0.is_empty() {
+        return;
+    }
+
     let render_pipeline = match gpu.render_pipeline {
         Some(id) => id,
         None => {

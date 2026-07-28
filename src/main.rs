@@ -2,12 +2,14 @@ mod bubble;
 mod consts;
 mod enemy;
 mod player;
+mod quality;
 mod scene;
 mod soap;
 mod state;
 mod ui;
 
 use avian3d::prelude::*;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
 fn main() {
@@ -16,6 +18,7 @@ fn main() {
             primary_window: Some(Window { title: "D WAY".into(), ..default() }),
             ..default()
         }))
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(PhysicsPlugins::default())
         // 小さめのアリーナに合わせて重力を強めにし、泡の山なり弾道を短めにする。
         .insert_resource(Gravity(Vec3::NEG_Y * 14.0))
@@ -24,6 +27,7 @@ fn main() {
             scene::ScenePlugin,
             player::PlayerPlugin,
             bubble::BubblePlugin,
+            quality::QualityPlugin,
             soap::SoapPlugin,
             enemy::EnemyPlugin,
             ui::HudPlugin,

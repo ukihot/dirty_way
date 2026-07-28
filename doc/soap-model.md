@@ -1273,3 +1273,339 @@ fn fragment(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> 
 * Metaball描画は専用ポストプロセスNodeを新設するより、既存の`Transparent3d`フェーズに参加する方が、深度・ブレンディング処理を再実装せずに済むこと
 
 の3点である。実装フェーズ（Phase 1〜4、第15〜18節）に着手する際は、まず本節のプラグイン骨格（第20.2節の対応表）を`src/soap.rs`として立ち上げ、既存の`bubble.rs`とは独立に検証してから置き換えるとよい。
+
+---
+
+# 27. 設計の再定義：Particle-based Liquid → Macro Foam Aggregate + Microstructure
+
+第1〜26節の実装は`doc/soap-issues.md`のS-01〜S-03で報告された通り、「泡っぽい形にはなるが毎回ほぼ同じ形状に収束する」という問題を抱えていた。原因を掘り下げると、これは単なるパラメータ調整の問題ではなく、**力学モデルそのものが「粘性のある液体・ジェル」を対象にしていた**ことに起因する。
+
+```text
+射出 → 飛翔 → 着弾 → 扁平化 → 粘性で広がる → Metaball融合
+```
+
+これはハンドソープの**液体**としては妥当だが、「ハンドソープの**泡**」は本来、
+
+```text
+大量の微細気泡 + 薄い液膜 + 液体のネットワーク + 気泡同士の変形
+```
+
+という別の力学対象である。液体は放っておけば滑らかな平衡形状に収束するため、S-01〜S-03の対症療法（`max_spread`の上限緩和、`scatter`の拡大、表面への加算ノイズ）は「均質な液体モデルに泡らしさを後付けしていただけ」であり、根本原因の解消にはなっていなかった。
+
+## 27.1 再定義：Particle = 泡の塊（Foam Aggregate）
+
+そこで、GPU Particleの意味を次のように再定義する。
+
+```text
+旧: Particle = 液体の小片
+新: Particle = 泡の集合体の「局所的な塊」
+     （数十〜数百個の微細気泡を平均化したマクロな泡構造）
+```
+
+1回の射出は、複数の独立した液体粒子（旧: 10〜30個）ではなく、**1〜数個のFoam Aggregate**として扱う。見た目の複雑さ（無数の泡が集まっているように見えること）は、粒子数を増やすのではなく、後述のMicrostructure層が担当する。
+
+```text
+旧: 1 Push → 10〜30 Particles（それぞれが独立した液滴）
+新: 1 Push → 1〜数個の Foam Aggregate（内部にMicrostructureを持つ）
+```
+
+これにより、**シミュレーション解像度**（GPU上で実際に動かす塊の数）と**知覚解像度**（見た目上いくつの泡があるように見えるか）を完全に分離できる。数千個の泡を個別にシミュレーションしなくても、数千個の泡が存在するように見せられる。
+
+## 27.2 三層分離
+
+第2.1節の「シミュレーションとレンダリングを分離する」原則を、次のように三層へ拡張する。
+
+```text
+┌─────────────────────────────┐
+│ Simulation                  │
+│                              │
+│ Foam Aggregate               │
+│ 粘弾性・圧縮・移流・着弾      │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│ Macro Surface                │
+│                              │
+│ Metaball / Density Field     │
+│ 泡の塊の外形                  │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│ Microstructure                │
+│                              │
+│ Bubble Pattern / Thin Film    │
+│ Void / Foam Texture           │
+└─────────────────────────────┘
+```
+
+第2.1節の原則（`Particle Simulation ≠ Visual Surface`）を、
+
+> **Simulation ≠ Macro Surface ≠ Microstructure**
+
+まで拡張する。Macro Surfaceは既存のMetaball/Density Fieldをそのまま流用できる。Microstructureは、密度場を「加算」するのではなく、大きな塊の内部から気泡状のボイドを「減算」で刳り抜くイメージで、概念的には
+
+```text
+FoamField(p) = LiquidFilmField(p) − BubbleVoidField(p)
+```
+
+と表現できる（第29節Phase 4で具体化する。現行実装のS-03ノイズは、この層の暫定的な代用品にすぎない）。
+
+## 27.3 Foam Aggregateの内部状態
+
+```rust
+struct FoamAggregate {
+    position: Vec3,
+    velocity: Vec3,
+    scale: Vec3,
+
+    bubble_size: f32,
+    bubble_density: f32,
+    void_fraction: f32,
+
+    anisotropy: Vec3,
+    random_seed: u32,
+
+    state: u32,
+}
+```
+
+第8節のAnisotropic Scale（着弾による扁平化）はそのまま残す。ただし解釈を「着弾速度→運動エネルギー→横方向への広がり」から「圧縮・せん断→気泡構造の再配列→集合体の扁平化」に読み替える。実装（WGSLの数式）は変わらない。
+
+# 28. Avian3Dによるマクロ力学の分離
+
+第27節の三層のうち、Simulation層をさらに分離する。**「泡そのものをシミュレーションする」のではなく、「泡集合体のマクロな力学（位置・速度・接触）」をAvian3Dに任せ、GPU Compute Shaderは「その結果、集合体がどう変形するか」というレオロジー変換だけを担当する**。
+
+```text
+┌──────────────┐
+│   Bevy ECS   │
+└──────┬───────┘
+       │
+   Spawn Foam
+       │
+       ▼
+┌──────────────┐
+│  Avian 3D    │
+│              │
+│ RigidBody    │
+│ Collider     │
+│ Contact      │
+└──────┬───────┘
+       │
+Contact Events
+       │
+       ▼
+┌─────────────────────┐
+│ Foam Aggregate State│
+│                      │
+│ Compression          │
+│ Shear                │
+│ Plasticity            │
+│ Spread                │
+│ Void Fraction          │
+└──────────┬───────────┘
+       │
+       ▼
+   GPU Buffer
+       │
+┌──────┴──────┐
+│             │
+Macro Shape   Microstructure
+│             │
+Density Field  Bubble Pattern
+│             │
+Metaball/SDF   Foam Noise
+│             │
+└──────┬──────┘
+       ▼
+   Rendering
+```
+
+Avianの`RigidBody`をそのまま描画対象にしない。Avianは「この泡の塊は今どこにいて、どういう速度で、何にぶつかっているか」だけを解く。GPU側は「その結果、集合体はどういう形に変形しているか」を解く。レンダリング側は「その形状をどう泡に見せるか」を解く。単なる「Avian＋Metaball」の組み合わせではなく、**接触力学から泡のレオロジーへの変換モデル**として設計する。
+
+## 28.1 既存コードとの接続
+
+`bubble.rs`はゲームプレイの当たり判定として既にAvian3Dの`RigidBody::Dynamic`＋`Collider::sphere`を持っている。第20〜26節までの実装は、この存在を知らずに`soap_compute.wgsl`が重力積分・地面接触判定を独自に再実装していた（`SimParams.gravity`が`main.rs`の`Gravity`リソースと無関係に`14.0`という別の定数として存在していた。値はたまたま一致していたが、2つの真実の源が独立に存在する状態で、片方だけ変更すればズレる潜在バグだった。`doc/soap-issues.md`のS-09として記録する）。
+
+この節の設計は、**`bubble.rs`のAvianボディそのものをFoam Aggregateのマクロ状態の一次情報源にする**ことを意味する。すなわち、
+
+* 1個のゲームプレイBubbleエンティティ = 1個のFoam Aggregate
+* Compute Shaderは自前の重力積分・FLYING状態の位置更新をやめ、Avianが解いた`Transform`/`LinearVelocity`を毎フレーム受け取ってそのまま採用する
+* 地面接触の判定は（Phase 1では簡略化のため）引き続き`position.y <= table_height`のシェーダー内チェックで行う。Avianの`CollisionStart`/`Collisions`（既に`bubble.rs`がbubble-enemy判定で使っている仕組み）から接触インパルスを取る拡張は、将来Phase（第29節Phase 2以降の精緻化）の候補として残す
+
+## 28.2 唯一新しく必要になる仕組み：永続的なEntity⇔GPUスロット対応
+
+第22節のリングカーソル方式は「1回のSpawn Requestをその場でスロットに割り振って終わり」という**一回性**の仕組みだった。Avian駆動にすると、生きているBubbleエンティティの位置・速度を**毎フレーム継続的に**GPU側へ送る必要があるため、「どのMain WorldエンティティがどのGPUスロットに対応しているか」を複数フレームにわたって保持する対応表が必要になる。
+
+```rust
+#[derive(Resource)]
+struct FoamSlotAllocator {
+    slot_of_entity: HashMap<Entity, u32>,
+    free_slots: Vec<u32>,
+}
+```
+
+* 新しく見つかったBubbleエンティティ（前フレームまで存在しなかった）→ `free_slots`から1つ払い出して対応表に登録（＝新規スポーン）
+* 前フレームまで存在したが今フレーム消えたBubbleエンティティ（despawn済み）→ 対応するスロットを`free_slots`へ返却
+
+これは第14節の「Particle Bufferそのものを毎フレームExtractしない」という原則に反しない。原則が禁じているのは256〜512スロットの**プール全体**を毎フレーム転送することであり、同時に飛んでいる（実際にはせいぜい数個の）Bubbleエンティティの位置・速度だけを送るのは、既存の`SoapSpawnRequest`（1回の発射イベント）を「継続的なDrive更新」に置き換えるだけで、規模としては変わらない。
+
+なお、`bubble.rs`側の寿命（`BUBBLE_LIFETIME`）とGPU側の寿命（`MAX_LIFETIME`）は同じ値・同じ起点（スポーン時刻）でカウントされるため、Bubbleエンティティがdespawnするタイミングと、対応するGPU粒子が自然にフェードアウトし終える（第8.3項、S-08）タイミングはほぼ一致する。そのためスロットは対応するBubbleエンティティが消えた瞬間に即座に回収してよい。
+
+# 29. 改訂後のPhase計画
+
+第15〜18節のPhase計画を、次のように置き換える。
+
+```text
+Phase 1
+Foam Aggregate 基盤
+    Avian駆動のposition/velocity抽出
+    永続的なEntity⇔GPUスロット対応表
+    Compute Shaderから自前の重力積分を除去
+
+Phase 2
+Aggregate Deformation
+    Avianが解いた着弾速度→圧縮・せん断
+    扁平化・広がり（レオロジー変換）
+    ※第8〜9節の数式は変更なし、解釈と入力元だけ変わる
+
+Phase 3
+Macro Fusion
+    Density Field / Metaball
+    ※第10〜12節のまま。変更不要
+
+Phase 4
+Microstructure
+    Bubble Void / Foam Texture / Thin Film
+    第27.2節のFoamField = LiquidFilmField − BubbleVoidField を実装する
+    現行のS-03加算ノイズを、減算ボイドへ拡張する形で置き換える
+
+Phase 5+
+Bubble Dynamics（将来候補）
+    Coalescence / Drainage / Bubble Rearrangement
+    Macro PBD / XPBD による粘弾塑性体としての挙動
+```
+
+第18節にあった「Phase 4以降 = PBF/SPH」というロードマップは撤回する。泡の集合体は液体のように流れる一方、低応力では固体的に形を保つため、単純なSPHよりも**粘弾塑性体（Macro PBD/XPBD）**として扱う方が自然という判断による。PBF/SPHは必須の次ステップではなく、Phase 5以降の一候補にとどめる。
+
+# 30. 第27〜29節のまとめ
+
+* 「毎回同じ形になる」問題の根本原因は、パラメータではなく力学モデル（液体 vs 泡）の不一致だった
+* `Particle = 液体の小片`を`Particle = Foam Aggregate（泡の集合体の局所的な塊）`に再定義し、Simulation / Macro Surface / Microstructureの三層に分離する
+* Foam Aggregateのマクロな力学（位置・速度・接触）はAvian3Dに一本化する。`bubble.rs`の既存Avianボディがそのまま一次情報源になり、`soap_compute.wgsl`が独自に持っていた重力定数の二重管理（S-09）が解消される
+* 新たに必要になるのは、Bubbleエンティティ⇔GPUスロットの永続対応表のみ。Extract自体は「1回のSpawn Request」から「毎フレームのDrive更新」に変わるが、転送量は同時に生きているBubble数のオーダーのままで、第14節の原則（プール全体を毎フレーム転送しない）には反しない
+* 第8〜12節（扁平化・広がり・Metaball）の数式はそのまま流用できる。実装コストが大きいのはPhase 1（Entity⇔スロット対応表）とPhase 4（Microstructure）の2箇所に限られる
+
+---
+
+# 31. Phase 1実装の精緻化：命名・所有権・Phase 1という前提の明示
+
+第28.2節で導入した「Entity⇔スロット対応表」を実装する過程で、3つの改善点が明らかになった。
+
+## 31.1 命名：「GPU Particle Pool」→「GPU Foam Instance Pool」
+
+「GPU Particle Pool」という名前は、GPU上の粒子が物理状態の主体であるというニュアンスを引きずっている。第28節の設計では、位置・速度の物理的な真実はAvian3D（Main World）が持ち、GPU上の1スロットは「1個のFoam Aggregateをレンダリングするための状態（変形・寿命・世代番号）」でしかない。そこで名称を次のように改める。
+
+```text
+旧: GPU Particle Pool          新: GPU Foam Instance Pool
+旧: Particle（WGSL構造体）      新: FoamInstance
+旧: GpuParticle（Rust構造体）   新: FoamInstance
+```
+
+「1スロット＝1泡粒子」ではなく「1スロット＝1つのFoam Aggregateの見た目のインスタンス」であることをコード上の名前でも表現する。
+
+## 31.2 所有権：Entity⇔Slot対応はEntity自身に持たせる
+
+第28.2節では「Entity⇔スロット対応表」をRender World側のResource（`slot_of_entity: HashMap<Entity, u32>`）として設計した。動作はするが、ECS的にはもう一歩自然な設計がある。
+
+```text
+旧: Resource（FoamSlotAllocator）が「どのEntityがどのSlotか」を丸ごと持つ
+新: Entity自身が「自分のSlot」をComponentとして持つ
+    Resourceは「空きSlotのリスト」だけを持つ
+```
+
+```rust
+// Bubble Entity（Main World）
+Bubble Entity
+├─ Bubble
+├─ RigidBody
+├─ Collider
+└─ FoamGpuBinding { slot: 37, generation: 12 }
+
+// Resource（Main World）
+struct FoamSlotAllocator {
+    free_slots: Vec<u32>,
+    next_generation: u32,
+}
+```
+
+「EntityとSlotの対応そのもの」はEntityに所有させ、「空きSlotの管理」だけをResourceに持たせる方が、ECS的に自然（データの所有者が単一になる）。
+
+ここで重要な制約がある。**この割当（`allocate()`）はMain World側で行わなければならない。** Render WorldはExtractを通じてMain Worldのデータを読み取れるだけで、Main World側のEntityにComponentを書き込むことはできない（`Extract<Query<...>>`は読み取り専用）。第28.2節の設計はスロット割当をRender World側（`prepare_foam_drive_queue`内の`HashMap`によるreconcile処理）で行っていたため、動作はするものの、本質的にはMain World側で完結できる責務をRender World側に置いてしまっていた。
+
+割当をMain World（`bubble.rs`の`spawn_bubble`が呼ばれた瞬間）に移すと、次のように単純化される。
+
+```text
+Spawn
+  ↓
+allocator.allocate() → FoamGpuBinding { slot, generation }
+  ↓
+commands.spawn((Bubble, ..., FoamGpuBinding))
+
+Update（毎フレーム）
+  ↓
+Extract<Query<(&Transform, &LinearVelocity, &Bubble, &FoamGpuBinding)>>
+  ↓
+そのままGPUへ転送（Render World側にreconcile処理は不要）
+
+Despawn
+  ↓
+Option<&FoamGpuBinding> を見て allocator.release()
+```
+
+Render World側（`soap.rs`）はスロット管理から完全に解放され、「Extractした状態をそのままGPUのDrive Queueへ流す」だけになる。`FOAM_INSTANCE_POOL_SIZE`という同じ定数を、Main World側の割当（`bubble.rs`）とRender World側のバッファ確保（`soap.rs`）の両方で共有する必要があるため、`consts.rs`に置いて一元化する（S-09と同じ「2箇所に独立した定数を置かない」という教訓の適用）。
+
+## 31.3 「1 Bubble Entity = 1 Foam Aggregate」はPhase 1の前提であり物理的真理ではない
+
+第27.1節以降、「1個のBubbleエンティティ＝1個のFoam Aggregate」という対応を暗黙に使ってきたが、これは**物理的な真理としてではなく、Phase 1におけるマクロ表現の単位という前提として明示する**べきである。
+
+物理的には、Foam Aggregate（泡の塊）を1個の剛体として扱うのは近似にすぎない。将来的に「1個のAggregateが複数のRigidBodyから構成される」「1個のRigidBodyが複数のAggregateに分裂する」といった表現力が必要になれば、1 Aggregate = 1 RigidBodyという対応では足りなくなる。現時点でこの制約を設計の隅々に固定的に埋め込まない（例えば`FoamGpuBinding`をBubbleに1個だけ持たせる、という実装は変えないが、将来「1 Bubbleが複数のFoamGpuBindingを持つ」拡張がありうることを排除しない）。
+
+## 31.4 課題S-10：スロット再利用時の変形状態残留と、その対策としての世代番号
+
+第28.2節では「BubbleのdespawnタイミングとGPU粒子のフェード完了タイミングはほぼ一致するので、スロットは即座に回収してよい」としていたが、これは**タイミングが一致する場合の話であり、保証ではない**。特にリスタート（`state.rs`の`reset_game`）は、生存中のBubbleを寿命を待たずに一斉despawnさせるため、まだ大きく扁平化した状態のFoam Instanceのスロットが即座に解放され、直後に発射された新しいBubbleに再割当される。
+
+このとき、GPU側（`soap_compute.wgsl`）の新規スポーン判定が`state == STATE_INACTIVE`だけだと、再利用されたスロットの`state`はまだ`STATE_SPREADING`や`STATE_RESTING`のままなので「既存の変形済みFoam Instance」として扱われ続けてしまう。結果、リスタート直後に発射した泡が、着弾もしていないのに最初から扁平に潰れた見た目で飛んでいく、という不具合になる（`doc/soap-issues.md` S-10）。
+
+対策として、`FoamGpuBinding`に`generation: u32`を持たせる。スロットを割り当てるたびに`FoamSlotAllocator`内の単調増加カウンタから新しい世代番号を払い出し、Drive Entryに含めてGPUへ送る。GPU側（`FoamInstance`にも同じ`generation`フィールドを持たせる）は、
+
+```text
+新規スポーンとみなす条件:
+    state == INACTIVE
+    または
+    drive_entry.generation != instance.generation
+```
+
+という判定に変える。これにより、「スロット番号は同じだが論理的には別のBubble」を確実に区別でき、despawn時に明示的な後始末（GPU側へのリセット通知）を送る必要がなくなる。世代番号という1つの`u32`フィールドを毎フレームのDrive Entryに乗せるだけで、スロット再利用に関する正しさが保証される。
+
+## 31.5 本設計の中心原則（再掲）
+
+本設計の本質は、泡を高解像度で物理シミュレーションすることではない。
+
+> 泡集合体のマクロな運動をAvian3Dで解き、その結果をGPU上のレオロジー変換へ入力し、さらにMacro SurfaceとMicrostructureを分離することで、**シミュレーション解像度と知覚解像度を意図的に分離する**こと。
+
+これにより、数千個の微細気泡を個別にシミュレーションすることなく、泡集合体としての「圧縮・せん断・広がり・融合」と、微細気泡としての「多孔性・薄膜・不均一性」を同時に表現できる。
+
+```text
+Avian3D
+    泡を解くのではなく、泡が存在する世界との力学的相互作用を解く
+
+GPU Compute
+    その結果を泡集合体の内部状態（レオロジー）へ変換する
+
+Renderer
+    その状態を人間が泡として知覚する表現へ変換する
+```
+
+この三段階の分離こそが、本設計の中心原則である。第20〜26節（Bevy 0.19実API対応）や第31節（命名・所有権・世代番号）で行った変更は、いずれもこの原則をBevy/Avian3D/WGSLの実装へ落とし込む過程での具体化であり、原則そのものを変更するものではない。

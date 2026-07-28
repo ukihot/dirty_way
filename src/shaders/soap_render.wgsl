@@ -1,26 +1,45 @@
-// リアルタイム・ハンドソープ表現：Metaballレイマーチ描画（doc/soap-model.md 第10〜12,24,25節）。
+// リアルタイム・ハンドソープ表現：Metaballレイマーチ描画（doc/soap-model.md 第10〜12,24,25,31節）。
 // 画面全体を覆う1枚の三角形を描き、フラグメントシェーダー側でカメラレイを
-// 再構築してParticle Bufferを直接評価する（Phase 1: 3D Density Gridは使わない）。
+// 再構築してFoam Instance Bufferを直接評価する（Phase 1: 3D Density Gridは使わない）。
 //
 // Phase 1では深度テストを行わない（詳細はsoap.rsの depth_stencil コメントを参照）。
 
-struct Particle {
+// 1スロットは「泡粒子」ではなく「1個のFoam Aggregateの見た目の変形状態」を
+// 表すため、`Particle`ではなく`FoamInstance`と呼ぶ（doc第31節）。
+struct FoamInstance {
     position: vec3<f32>,
     velocity: vec3<f32>,
     scale: vec3<f32>,
     state: u32,
     lifetime: f32,
+    base_radius: f32,
+    generation: u32,
 };
 
 struct SoapView {
     clip_from_world: mat4x4<f32>,
     world_from_clip: mat4x4<f32>,
     camera_world_position: vec3<f32>,
+    // Foam Quality（doc/soap-issues.md S-11a）に応じたレイマーチのステップ数。
+    raymarch_steps: u32,
+    // MICROSTRUCTURE_* 定数のいずれかと対応。
+    microstructure_quality: u32,
 };
 
 const STATE_INACTIVE: u32 = 0u;
 
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+const MICROSTRUCTURE_SIMPLE: u32 = 0u;
+const MICROSTRUCTURE_NORMAL: u32 = 1u;
+const MICROSTRUCTURE_DETAILED: u32 = 2u;
+
+// soap_compute.wgsl の MAX_LIFETIME と同じ値に保つこと。課題S-08：寿命の
+// 終わり際に密度を薄めてフェードアウトさせる（scaleをcompute側で毎フレーム
+// 縮めると乗算が重なって指数的に潰れてしまうため、render側でlifetimeから
+// 都度計算する）。
+const MAX_LIFETIME: f32 = 6.0;
+const FADE_DURATION: f32 = 1.0;
+
+@group(0) @binding(0) var<storage, read> foam_instances: array<FoamInstance>;
 @group(0) @binding(1) var<uniform> view: SoapView;
 
 struct VertexOutput {
@@ -41,22 +60,76 @@ fn vertex(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
-fn particle_density(p: vec3<f32>, particle: Particle) -> f32 {
+// 課題S-03：表面ノイズ用の簡易ハッシュ/バリューノイズ。Instanceの位置をシードに
+// 混ぜているため、着弾位置が変わるたびに模様も変わり、滑らかな楕円体だけが
+// 並ぶ「毎回同じに見える」印象を和らげる。
+fn hash31(p: vec3<f32>) -> f32 {
+    var p3 = fract(p * 0.1031);
+    p3 = p3 + dot(p3, p3.zyx + 31.32);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+fn value_noise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+
+    let c000 = hash31(i + vec3<f32>(0.0, 0.0, 0.0));
+    let c100 = hash31(i + vec3<f32>(1.0, 0.0, 0.0));
+    let c010 = hash31(i + vec3<f32>(0.0, 1.0, 0.0));
+    let c110 = hash31(i + vec3<f32>(1.0, 1.0, 0.0));
+    let c001 = hash31(i + vec3<f32>(0.0, 0.0, 1.0));
+    let c101 = hash31(i + vec3<f32>(1.0, 0.0, 1.0));
+    let c011 = hash31(i + vec3<f32>(0.0, 1.0, 1.0));
+    let c111 = hash31(i + vec3<f32>(1.0, 1.0, 1.0));
+
+    let x00 = mix(c000, c100, u.x);
+    let x10 = mix(c010, c110, u.x);
+    let x01 = mix(c001, c101, u.x);
+    let x11 = mix(c011, c111, u.x);
+    let y0 = mix(x00, x10, u.y);
+    let y1 = mix(x01, x11, u.y);
+    return mix(y0, y1, u.z);
+}
+
+fn instance_density(p: vec3<f32>, inst: FoamInstance) -> f32 {
     // 楕円体化：スケールで正規化してから単位球のカーネルを評価する（第10節）。
-    let local = (p - particle.position) / particle.scale;
+    let local = (p - inst.position) / inst.scale;
     let d = dot(local, local);
-    return max(0.0, 1.0 - d);
+    let base = max(0.0, 1.0 - d);
+
+    // 課題S-11a：Microstructureの詳細度をQualityで段階化する。Simpleでは
+    // ノイズを一切評価しない（value_noise3はhash31を8回呼ぶのでLow環境では
+    // 無視できないコスト）。Detailedは高周波オクターブを1つ重ねる。
+    var noisy = base;
+    if (view.microstructure_quality != MICROSTRUCTURE_SIMPLE) {
+        // ノイズはbaseに比例させ、Instanceから十分離れた「何もない空間」に
+        // 密度が生まれないようにする。
+        let n1 = value_noise3(p * 4.0 + inst.position * 5.0) - 0.5;
+        var n = n1;
+        if (view.microstructure_quality == MICROSTRUCTURE_DETAILED) {
+            let n2 = value_noise3(p * 9.0 + inst.position * 3.0) - 0.5;
+            n = n1 * 0.7 + n2 * 0.3;
+        }
+        noisy = max(0.0, base + n * 0.35 * base);
+    }
+
+    // 課題S-08：寿命の最後のFADE_DURATION秒で密度を1.0→0.0へ薄める。
+    // DENSITY_THRESHOLDに届かなくなり、外側から縮むように自然に消える。
+    let fade_start = MAX_LIFETIME - FADE_DURATION;
+    let fade = 1.0 - clamp((inst.lifetime - fade_start) / FADE_DURATION, 0.0, 1.0);
+    return noisy * fade;
 }
 
 fn scene_density(p: vec3<f32>) -> f32 {
     var sum = 0.0;
-    let count = arrayLength(&particles);
+    let count = arrayLength(&foam_instances);
     for (var i = 0u; i < count; i = i + 1u) {
-        let particle = particles[i];
-        if (particle.state == STATE_INACTIVE) {
+        let inst = foam_instances[i];
+        if (inst.state == STATE_INACTIVE) {
             continue;
         }
-        sum = sum + particle_density(p, particle);
+        sum = sum + instance_density(p, inst);
     }
     return sum;
 }
@@ -68,9 +141,10 @@ const BOUNDS_MIN: vec3<f32> = vec3<f32>(-18.0, -0.5, -18.0);
 const BOUNDS_MAX: vec3<f32> = vec3<f32>(18.0, 6.0, 18.0);
 
 const DENSITY_THRESHOLD: f32 = 1.0;
-// 32だとAABB全体(最大36x6.5x36)に対してステップが粗すぎ、粒子の塊
-// （半径1〜2程度）をまたぎ越して一切ヒットしないことがあった。解像度を上げる。
-const MAX_STEPS: i32 = 96;
+// ステップ数はview.raymarch_steps（Foam Quality、doc S-11a）で決まる。
+// 96より粗いと、AABB全体(最大36x6.5x36)に対してInstanceの塊
+// （半径1〜2程度）をまたぎ越して一切ヒットしないことがあるので、
+// Lowでもある程度のステップ数は確保する（quality.rs参照）。
 
 fn ray_box_intersect(origin: vec3<f32>, inv_dir: vec3<f32>) -> vec2<f32> {
     let t0 = (BOUNDS_MIN - origin) * inv_dir;
@@ -103,11 +177,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    let step_size = (t_max - t) / f32(MAX_STEPS);
+    let max_steps = i32(view.raymarch_steps);
+    let step_size = (t_max - t) / f32(max_steps);
     var hit = false;
     var hit_pos = origin;
 
-    for (var step = 0; step < MAX_STEPS; step = step + 1) {
+    for (var step = 0; step < max_steps; step = step + 1) {
         let sample_pos = origin + direction * t;
         if (scene_density(sample_pos) > DENSITY_THRESHOLD) {
             hit = true;

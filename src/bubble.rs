@@ -3,6 +3,7 @@ use bevy::prelude::*;
 
 use crate::consts::*;
 use crate::enemy::{Enemy, Trapped};
+use crate::quality::FoamQualityProfile;
 use crate::state::{GameState, Score};
 
 /// プレイヤーが発射する泡の当たり判定（ゲームロジック専用、見た目は持たない）。
@@ -14,15 +15,71 @@ use crate::state::{GameState, Score};
 pub struct Bubble {
     pub power: i32,
     pub life: f32,
+    /// このバブルの半径。`soap.rs` がFoam Aggregateの基準サイズとして読み出す
+    /// （doc/soap-model.md 第27.3節）。
+    pub radius: f32,
     /// このバブルが既にダメージを与えた敵（同じ相手に毎フレーム連続ダメージしないため）。
     hit_enemies: Vec<Entity>,
+}
+
+/// このBubbleエンティティが対応するGPU側Foam Instanceのスロット（doc第31節）。
+/// 「EntityとSlotの対応そのもの」はEntity自身に持たせ（Component）、
+/// 「空きSlotの管理」だけをResource（`FoamSlotAllocator`）に持たせる。
+///
+/// `generation`は、このスロットへの「今回の」割当を識別する番号。スロットは
+/// despawn後すぐ別のBubbleへ再利用されうるが、GPU側（soap_compute.wgsl）の
+/// 変形状態（scale等）はそのフレームまでの古いBubbleのものが残っている。
+/// generationが前回と食い違っていたら、GPU側は現在の状態を無視して
+/// 新規スポーンとして初期化し直す。これが無いと、直前のBubbleが扁平に
+/// 潰れた状態のまま新しいBubbleの見た目として使われてしまう
+/// （特にリスタート直後に即発射すると起きやすい。doc/soap-issues.md S-10）。
+#[derive(Component, Clone, Copy)]
+pub struct FoamGpuBinding {
+    pub slot: u32,
+    pub generation: u32,
+}
+
+/// GPU Foam Instance Poolの空きスロット管理。Main World側（このBubble
+/// エンティティ自身）が対応表を持つので、こちらは「今どのスロットが空いているか」
+/// だけを覚えていればよい（doc第31節）。
+#[derive(Resource)]
+pub struct FoamSlotAllocator {
+    free_slots: Vec<u32>,
+    next_generation: u32,
+}
+
+impl Default for FoamSlotAllocator {
+    fn default() -> Self {
+        Self { free_slots: (0..FOAM_INSTANCE_POOL_SIZE).collect(), next_generation: 1 }
+    }
+}
+
+impl FoamSlotAllocator {
+    /// `quality.max_aggregates`（GPU Instance Poolの物理容量512とは独立な、
+    /// 品質段階ごとの同時表示上限）に達していたらスロットを払い出さない
+    /// （doc/soap-issues.md S-11a）。Poolの容量そのものは常に512のまま変えない。
+    fn allocate(&mut self, quality: FoamQualityProfile) -> Option<FoamGpuBinding> {
+        let active = FOAM_INSTANCE_POOL_SIZE - self.free_slots.len() as u32;
+        if active >= quality.max_aggregates {
+            return None;
+        }
+
+        let slot = self.free_slots.pop()?;
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+        Some(FoamGpuBinding { slot, generation })
+    }
+
+    pub fn release(&mut self, binding: &FoamGpuBinding) {
+        self.free_slots.push(binding.slot);
+    }
 }
 
 pub struct BubblePlugin;
 
 impl Plugin for BubblePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<FoamSlotAllocator>().add_systems(
             Update,
             (tick_bubble_lifetime, despawn_out_of_bounds, bubble_enemy_interaction)
                 .run_if(in_state(GameState::Playing)),
@@ -30,28 +87,49 @@ impl Plugin for BubblePlugin {
     }
 }
 
-pub fn spawn_bubble(commands: &mut Commands, position: Vec3, velocity: Vec3, radius: f32, power: i32) {
-    commands.spawn((
-        Bubble { power, life: 0.0, hit_enemies: Vec::new() },
+pub fn spawn_bubble(
+    commands: &mut Commands,
+    allocator: &mut FoamSlotAllocator,
+    quality: FoamQualityProfile,
+    position: Vec3,
+    velocity: Vec3,
+    radius: f32,
+    power: i32,
+) {
+    let mut entity = commands.spawn((
+        Bubble { power, life: 0.0, radius, hit_enemies: Vec::new() },
         RigidBody::Dynamic,
         Collider::sphere(radius),
-        Restitution::new(0.55),
+        // 泡の見た目（soap.rs）はもう「跳ねるボール」ではなく「着地して潰れる
+        // 泡の塊」として描画される。跳ね返りが大きいと、Compute Shader側で
+        // 空中に戻ったかどうかを再判定する必要が出て複雑になるため、反発は
+        // 低く抑えて実質1回で着地・扁平化させる（doc/soap-model.md 第28.1節）。
+        Restitution::new(0.12),
         Friction::new(0.05),
         LinearDamping(0.15),
         AngularDamping(0.4),
         LinearVelocity(velocity),
         Transform::from_translation(position),
     ));
+    // 品質上限に達している、またはプールが尽きていたら見た目（FoamGpuBinding）
+    // だけ諦める。ゲームロジックには影響しない。
+    if let Some(binding) = allocator.allocate(quality) {
+        entity.insert(binding);
+    }
 }
 
 fn tick_bubble_lifetime(
     time: Res<Time>,
     mut commands: Commands,
-    mut bubbles: Query<(Entity, &mut Bubble)>,
+    mut allocator: ResMut<FoamSlotAllocator>,
+    mut bubbles: Query<(Entity, &mut Bubble, Option<&FoamGpuBinding>)>,
 ) {
-    for (entity, mut bubble) in &mut bubbles {
+    for (entity, mut bubble, binding) in &mut bubbles {
         bubble.life += time.delta_secs();
         if bubble.life > BUBBLE_LIFETIME {
+            if let Some(binding) = binding {
+                allocator.release(binding);
+            }
             commands.entity(entity).despawn();
         }
     }
@@ -59,12 +137,16 @@ fn tick_bubble_lifetime(
 
 fn despawn_out_of_bounds(
     mut commands: Commands,
-    bubbles: Query<(Entity, &Transform), With<Bubble>>,
+    mut allocator: ResMut<FoamSlotAllocator>,
+    bubbles: Query<(Entity, &Transform, Option<&FoamGpuBinding>), With<Bubble>>,
 ) {
-    for (entity, transform) in &bubbles {
+    for (entity, transform, binding) in &bubbles {
         if transform.translation.y < -5.0
             || transform.translation.length() > BUBBLE_DESPAWN_DISTANCE
         {
+            if let Some(binding) = binding {
+                allocator.release(binding);
+            }
             commands.entity(entity).despawn();
         }
     }
