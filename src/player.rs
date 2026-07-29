@@ -2,7 +2,7 @@ use std::f32::consts::TAU;
 
 use bevy::prelude::*;
 use bevy_gutzgutz::input::GutzActionState;
-use bevy_gutzgutz::lifecycle::in_game;
+use bevy_gutzgutz::lifecycle::{in_game, not_paused};
 use rand::RngExt;
 
 use crate::actions::PlayerAction;
@@ -44,7 +44,14 @@ impl Plugin for PlayerPlugin {
                 Update,
                 (update_aim, rotate_player_visual, handle_charge_input)
                     .chain()
-                    .run_if(in_game::<GameState>()),
+                    .run_if(in_game::<GameState>())
+                    // update_aimの回転自体はTime<Virtual>停止（pause連動）で
+                    // 自然に止まるが、handle_charge_inputのjust_pressed/
+                    // just_released判定はTimeのdeltaを見ないため、pause中に
+                    // Spaceを押すとチャージ開始・離した瞬間の発射がそのまま
+                    // 素通りしてしまう。ポーズメニュー表示中は入力そのものを
+                    // 止める。
+                    .run_if(not_paused),
             );
     }
 }

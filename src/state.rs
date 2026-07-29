@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_gutzgutz::input::GutzActionState;
-use bevy_gutzgutz::lifecycle::{GutzExecutionContext, GutzLifecycleState};
+use bevy_gutzgutz::lifecycle::{GutzExecutionContext, GutzLifecycleState, GutzPaused, paused};
 use bevy_gutzgutz::save::{GutzLoadRequest, GutzLoaded, GutzSaveRequest};
 
 use crate::actions::PlayerAction;
@@ -12,18 +12,19 @@ use crate::player::Charge;
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default, States)]
 pub enum GameState {
     #[default]
+    Title,
     Playing,
     GameOver,
 }
 
 /// GutzLifeCyclePlugin向けの分類。
-/// GameOverはリザルト表示中でゲームプレイが進行していないため、
-/// タイトル画面と同じOutGame扱いにする。
+/// Title・GameOverはどちらもゲームプレイが進行していない
+/// （リザルト表示中／開始前）ため、同じOutGame扱いにする。
 impl GutzLifecycleState for GameState {
     fn execution_context(&self) -> GutzExecutionContext {
         match self {
             GameState::Playing => GutzExecutionContext::InGame,
-            GameState::GameOver => GutzExecutionContext::OutGame,
+            GameState::Title | GameState::GameOver => GutzExecutionContext::OutGame,
         }
     }
 }
@@ -61,7 +62,7 @@ impl Plugin for GameStatePlugin {
             .add_systems(Update, apply_loaded_save_data)
             .add_systems(OnEnter(GameState::Playing), reset_game)
             .add_systems(OnEnter(GameState::GameOver), save_high_score)
-            .add_systems(Update, restart_input);
+            .add_systems(Update, (restart_input, toggle_pause, quit_to_title.run_if(paused)));
     }
 }
 
@@ -130,9 +131,34 @@ fn restart_input(
     actions: Res<GutzActionState<PlayerAction>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    // RestartはOutGame専用（input.toml + actions.rs）なので、Playing中は
-    // ここに来ても常にfalseになる。
+    // RestartはOutGame専用（input.toml + actions.rs）なので、TitleからでもGameOverからでも
+    // 同じ「プレイを始める／やり直す」に使い回せる（どちらもOnEnter(Playing)のreset_gameで
+    // まっさらな状態になる）。
     if actions.just_pressed(PlayerAction::Restart) {
         next_state.set(GameState::Playing);
+    }
+}
+
+/// ポーズメニューの開閉トグル。`GutzPaused`を反転させるだけで、実際に
+/// `Time<Virtual>`を止める/再開するのも、ポーズ中の画面を出し分けるのも
+/// gutzgutz側（`GutzLifeCyclePlugin`のpause連動、ui.rsの`GutzUiStack`監視）
+/// に任せる——dirty_wayはトリガーとなるキーを決めるだけ。
+fn toggle_pause(actions: Res<GutzActionState<PlayerAction>>, mut gutz_paused: ResMut<GutzPaused>) {
+    if actions.just_pressed(PlayerAction::Pause) {
+        gutz_paused.0 = !gutz_paused.0;
+    }
+}
+
+/// ポーズメニューから「タイトルに戻る」。QuitToTitle自体はInGame中ずっと
+/// 許可されている（actions.rs参照）が、このシステム自体を`run_if(paused)`
+/// で絞っているため、実際に効くのはポーズメニューが開いている間だけ。
+fn quit_to_title(
+    actions: Res<GutzActionState<PlayerAction>>,
+    mut gutz_paused: ResMut<GutzPaused>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if actions.just_pressed(PlayerAction::QuitToTitle) {
+        gutz_paused.0 = false;
+        next_state.set(GameState::Title);
     }
 }
