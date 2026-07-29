@@ -86,7 +86,10 @@ fn cluster_offsets() -> [Vec2; FOAM_SUB_INSTANCES] {
     let ring_count = FOAM_SUB_INSTANCES - 1;
     for (i, offset) in offsets.iter_mut().skip(1).enumerate() {
         let angle = rotation + i as f32 / ring_count as f32 * TAU;
-        *offset = Vec2::new(angle.cos(), angle.sin()) * 0.45;
+        // 課題S-16：0.45だと隣接する塊同士の中心間距離に対して半径が
+        // 相対的に足りず、ソフトエッジ化しても「触れてはいるが融合しきらない」
+        // 見た目になっていた。もう少し寄せて確実にオーバーラップさせる。
+        *offset = Vec2::new(angle.cos(), angle.sin()) * 0.32;
     }
     offsets
 }

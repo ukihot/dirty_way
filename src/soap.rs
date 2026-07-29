@@ -48,11 +48,12 @@ use crate::bubble::{Bubble, FoamGpuBinding};
 use crate::consts::{FOAM_INSTANCE_POOL_SIZE, FOAM_SUB_INSTANCES};
 use crate::quality::{FoamQuality, FoamQualitySetting};
 
-/// クラスターを構成する各塊の半径。等倍だと`cluster_offsets`のオフセット幅
-/// （0.45 * radius）に対して塊が大きくなりすぎ、個々のInstanceが重なり合う
-/// というよりBubble本体より一回り大きい塊が並ぶだけになる。少し小さくして
-/// 「複数の塊が寄り集まって１つの塊に融合している」という見た目に寄せる。
-const FOAM_SUB_INSTANCE_RADIUS_SCALE: f32 = 0.75;
+/// クラスターを構成する各塊の半径。課題S-16：0.75だと`cluster_offsets`の
+/// オフセット幅（0.32 * radius）に対して塊がやや小さく、ソフトエッジ化した
+/// 後も「触れてはいるが融合しきらない」見た目になっていた。オフセットを
+/// 詰めたのに合わせて塊自体も大きくし、確実にオーバーラップさせることで
+/// 「複数の塊が寄り集まって１つの塊に融合している」という見た目にする。
+const FOAM_SUB_INSTANCE_RADIUS_SCALE: f32 = 0.9;
 
 pub struct SoapPlugin;
 

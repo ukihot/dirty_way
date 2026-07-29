@@ -55,6 +55,17 @@ const FADE_DURATION: f32 = 1.0;
 // 落ち込み分に余裕を持たせて下げる。
 const DENSITY_THRESHOLD: f32 = 0.5;
 
+// 課題S-16（2026-07-29）：DENSITY_THRESHOLDを跨いだ瞬間にdiscardし、
+// 跨いだ後は常に固定alpha=0.92で塗るハードカットオフだと、複数Instanceが
+// 触れ合っていても輪郭がそれぞれ独立した硬い円のまま――「融合したフワフワの泡」
+// ではなく「転がる小石」に見えてしまっていた（3D→2D方針転換後の実機確認で発覚）。
+// alpha自体をdensityでなだらかに変化させることで、(1)輪郭が柔らかいグラデーション
+// になる、(2)隣接Instance同士の低密度域が先に重なって視覚的に「橋渡し」され、
+// 実際に融合して見える、という2つの効果を同時に得る。
+const ALPHA_SOFT_START: f32 = DENSITY_THRESHOLD * 0.35;
+const ALPHA_SOFT_END: f32 = DENSITY_THRESHOLD * 1.2;
+const MAX_ALPHA: f32 = 0.92;
+
 @group(0) @binding(0) var<storage, read> foam_instances: array<FoamInstance>;
 @group(0) @binding(1) var<uniform> view: SoapView;
 // 課題S-12：poolの512スロット全部ではなく、実際に生きているAggregateの
@@ -109,20 +120,16 @@ fn instance_density(p: vec2<f32>, inst: FoamInstance) -> f32 {
     let d = dot(local, local);
     let base = max(0.0, 1.0 - d);
 
-    // 課題S-11a：Microstructureの詳細度をQualityで段階化する。Simpleでは
-    // ノイズを一切評価しない（value_noise2はhash21を4回呼ぶのでLow環境では
-    // 無視できないコスト）。Detailedは高周波オクターブを1つ重ねる。
+    // 課題S-16：以前はNormal/Detailed両方で±0.35*baseという強いノイズを
+    // 掛けており、これが石のようなまだらな質感の主因になっていた（実機確認）。
+    // ソープの泡らしい滑らかさを優先し、ノイズはDetailedのみ・振幅も大幅に
+    // 弱めた「表面の微妙な揺らぎ」程度に留める。
     var noisy = base;
-    if (view.microstructure_quality != MICROSTRUCTURE_SIMPLE) {
-        // ノイズはbaseに比例させ、Instanceから十分離れた「何もない空間」に
-        // 密度が生まれないようにする。
+    if (view.microstructure_quality == MICROSTRUCTURE_DETAILED) {
         let n1 = value_noise2(p * 4.0 + inst.position * 5.0) - 0.5;
-        var n = n1;
-        if (view.microstructure_quality == MICROSTRUCTURE_DETAILED) {
-            let n2 = value_noise2(p * 9.0 + inst.position * 3.0) - 0.5;
-            n = n1 * 0.7 + n2 * 0.3;
-        }
-        noisy = max(0.0, base + n * 0.35 * base);
+        let n2 = value_noise2(p * 9.0 + inst.position * 3.0) - 0.5;
+        let n = n1 * 0.7 + n2 * 0.3;
+        noisy = max(0.0, base + n * 0.08 * base);
     }
 
     // 課題S-08：寿命の最後のFADE_DURATION秒で密度を1.0→0.0へ薄める。
@@ -171,9 +178,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let world = world4.xy / world4.w;
 
     let density = scene_density(world);
-    if (density < DENSITY_THRESHOLD) {
+    if (density < ALPHA_SOFT_START) {
         discard;
     }
+    // 課題S-16：alphaをdensityでなだらかに変化させる（コメント参照）。
+    let alpha = smoothstep(ALPHA_SOFT_START, ALPHA_SOFT_END, density) * MAX_ALPHA;
 
     // 密度場を疑似的な高さ場として扱い、勾配から「液体表面の法線」を
     // でっち上げる（2Dゲームでもぷるっとした立体感を出すための定番の手法）。
@@ -183,10 +192,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(vec3<f32>(-dx, -dy, 0.6));
 
     let light_dir = normalize(vec3<f32>(-0.35, 0.55, 0.75));
-    let ndotl = max(dot(normal, light_dir), 0.15);
+    let ndotl = max(dot(normal, light_dir), 0.45);
     let view_dir = vec3<f32>(0.0, 0.0, 1.0);
-    let rim = pow(1.0 - max(dot(normal, view_dir), 0.0), 2.0);
-    let base_color = vec3<f32>(0.85, 0.95, 1.0);
+    // 課題S-16：rimの指数を上げてハイライトを鋭く・強く効かせ、艶っぽい
+    // 「泡」の質感を強調する（ndotlの下限も上げ、影が石のように暗く沈むのを防ぐ）。
+    let rim = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0);
+    let base_color = vec3<f32>(0.88, 0.96, 1.0);
 
-    return vec4<f32>(base_color * ndotl + rim * 0.25, 0.92);
+    let color = base_color * ndotl + vec3<f32>(1.0, 1.0, 1.0) * rim * 0.6;
+    return vec4<f32>(color, alpha);
 }
