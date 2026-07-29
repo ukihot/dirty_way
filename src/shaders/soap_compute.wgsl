@@ -29,6 +29,13 @@ struct FoamInstance {
     // generationが前回と食い違っていたら、stateに関わらず新規スポーンとして
     // 初期化し直す（doc/soap-issues.md S-10）。
     generation: u32,
+    // 課題S-24：0=まだ飛行中、1=床に直接着地、2=既存の泡だまりの上に着地
+    // （bubble::LandingSurfaceのエンコード）。Main World（Avian2D）側の
+    // 衝突判定が権威で、ここは追従するだけ。着地の有無そのものの判定
+    // （STATE_FLYING→STATE_IMPACT遷移）にも使う——以前は自前でY座標と
+    // 床の高さを比較していたが、泡だまりの上に着地した泡は床よりずっと
+    // 高い位置で静止するため、その比較では永久に着地を検知できなかった。
+    landing: u32,
 };
 
 struct DriveEntry {
@@ -37,6 +44,7 @@ struct DriveEntry {
     velocity: vec2<f32>,
     base_radius: f32,
     generation: u32,
+    landing: u32,
 };
 
 struct SimParams {
@@ -87,6 +95,11 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             inst.position = drive_entries[i].position;
             inst.velocity = drive_entries[i].velocity;
+            // 課題S-24：landingは新規スポーン時だけでなく毎フレーム
+            // 上書きする（position/velocityと同様）。Main World側で
+            // 「今フレーム着地した」瞬間にFlying→Floor/Pileへ変わるのを
+            // 見逃さないようにするため。
+            inst.landing = drive_entries[i].landing;
         }
     }
 
@@ -103,24 +116,36 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     if (inst.state == STATE_FLYING) {
-        // 位置・速度はAvianが解いたものをそのまま使う（このシェーダーは
-        // 重力を積分しない）。ここでは「床に着いたか」だけ判定する。
-        //
-        // 課題S-14：ここを`inst.position.y <= sim_params.floor_height`
-        // （中心Yが0以下）で判定していたが、Avianの円コライダーは床に
-        // めり込まないため、静止時の中心の高さは半径分だけ浮いた
-        // `floor_height + base_radius`になる。中心が0以下になることは
-        // 実質起こらず、STATE_IMPACTへ一切遷移せずに永遠にFLYING＝
-        // 真ん丸のまま跳ね続けていた。自身の半径を考慮して判定する。
-        if (inst.position.y <= sim_params.floor_height + inst.base_radius + 0.02) {
+        // 課題S-24：着地したかどうかはMain World側（Avian2Dの衝突判定、
+        // bubble::LandingSurface）の権威に従う。以前はここを
+        // `position.y <= floor_height + base_radius`という床基準の絶対
+        // 座標で自前判定していたが、既存の泡だまりの上に着地した泡は
+        // 床よりずっと高い位置で静止するため、この条件が永久に成立せず、
+        // 真ん丸のまま固まってしまっていた（S-14の修正はFloor直着地のみ
+        // 対応していた）。
+        if (inst.landing != 0u) {
             inst.state = STATE_IMPACT;
         }
     } else if (inst.state == STATE_IMPACT) {
         // 着弾速度→扁平化（第8節）。1フレームで即SPREADINGへ遷移する。
         // サイドビューでは画面の縦方向がそのままYなので、この扁平化は
         // 「床にぺたっと潰れて広がる水滴」として画面上にそのまま見える。
+        //
+        // 課題S-21：impact_speedだけに頼ると、浅い角度で着地した（下向き
+        // 速度がほぼ無い）泡がほとんど扁平化せず、丸いまま着地して見えて
+        // しまっていた。液体は着地速度が遅くても自重で広がるはずなので、
+        // 最低保証の扁平化を設ける。
+        //
+        // 課題S-24：床への直接着地(landing==1)はしっかり潰れて広がる
+        // （台形状の水たまり）が、既存の泡だまりの上への着地(landing==2)
+        // は嵩をあまり失わず、「雪だるま」ではなく「積み上がる液体」に
+        // 見えるよう、扁平化を弱めに留める（嵩の50%以上を保持）。
         let impact_speed = max(-inst.velocity.y, 0.0);
-        let spread = 1.0 + impact_speed * sim_params.impact_factor;
+        var min_spread = 1.6;
+        if (inst.landing == 2u) {
+            min_spread = 1.3;
+        }
+        let spread = max(min_spread, 1.0 + impact_speed * sim_params.impact_factor);
         inst.scale = vec2<f32>(spread, 1.0 / spread) * inst.base_radius;
         inst.state = STATE_SPREADING;
     } else if (inst.state == STATE_SPREADING) {

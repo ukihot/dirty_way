@@ -44,7 +44,7 @@ use bevy::render::sync_world::MainEntity;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
 
-use crate::bubble::{Bubble, FoamGpuBinding};
+use crate::bubble::{Bubble, FoamGpuBinding, LandingSurface};
 use crate::consts::{FOAM_INSTANCE_POOL_SIZE, FOAM_SUB_INSTANCES};
 use crate::quality::{FoamQuality, FoamQualitySetting};
 
@@ -126,6 +126,18 @@ struct FoamInstance {
     base_radius: f32,
     /// このスロットへの「今回の」割当を識別する世代番号。`FoamGpuBinding`参照。
     generation: u32,
+    /// 課題S-24：0=まだ飛行中、1=床に直接着地、2=既存の泡だまりの上に着地
+    /// （`bubble::LandingSurface`のエンコード）。bool系フィールドにu32を
+    /// 使うのは、WGSL側のstd430レイアウトがboolを直接サポートしないため。
+    ///
+    /// これはGPU側の「着地したかどうか」の判定信号も兼ねる。以前は
+    /// `position.y <= floor_height + base_radius`という床基準の絶対座標
+    /// だけで着地を判定していたが、泡だまりの上に着地した泡は床よりずっと
+    /// 高い位置で静止するため、この条件が永久に成立せず、丸いまま固まって
+    /// しまっていた（bubble::LandingSurfaceのコメント参照）。着地の判定
+    /// 自体をMain World側（Avian2Dの衝突判定）の権威に一本化し、毎フレーム
+    /// drive_entriesから上書きする（soap_compute.wgsl参照）。
+    landing: u32,
 }
 
 /// 「1回きりのスポーン要求」ではなく「今このBubbleはここにいる」という
@@ -137,6 +149,7 @@ struct GpuDriveEntry {
     velocity: Vec2,
     base_radius: f32,
     generation: u32,
+    landing: u32,
 }
 
 #[derive(Clone, Copy, ShaderType, Default)]
@@ -173,6 +186,7 @@ struct ExtractedAggregate {
     position: Vec2,
     velocity: Vec2,
     radius: f32,
+    landing: u32,
 }
 
 #[derive(Resource, Default)]
@@ -187,14 +201,19 @@ fn extract_foam_aggregates(
         // 1 Bubble = 1 RigidBodyのままだが、見た目は`FOAM_SUB_INSTANCES`個の
         // 塊をBubble中心の周りにずらして重ね、メタボール融合させる
         // （consts::FOAM_SUB_INSTANCES参照）。全サブInstanceは同じ
-        // position.y・velocityを共有するので、着地判定はまとまって同時に
-        // 起こる（soap_compute.wgslの状態遷移はY座標基準のため）。
+        // position.y・velocity・landingを共有する。
+        let landing = match bubble.landing {
+            LandingSurface::Flying => 0u32,
+            LandingSurface::Floor => 1u32,
+            LandingSurface::Pile => 2u32,
+        };
         for i in 0..FOAM_SUB_INSTANCES {
             extracted.0.push(ExtractedAggregate {
                 slot: binding.slots[i],
                 generation: binding.generation,
                 position: transform.translation.xy() + binding.offsets[i] * bubble.radius,
                 velocity: velocity.0,
+                landing,
                 radius: bubble.radius * FOAM_SUB_INSTANCE_RADIUS_SCALE,
             });
         }
@@ -368,6 +387,7 @@ fn prepare_foam_drive_queue(
             velocity: aggregate.velocity,
             base_radius: aggregate.radius,
             generation: aggregate.generation,
+            landing: aggregate.landing,
         });
         // 課題S-12：レンダー側がpool全体ではなく、この一覧だけを辿れるようにする。
         active_slots.0.get_mut().push(aggregate.slot);
@@ -383,6 +403,7 @@ fn prepare_foam_drive_queue(
             velocity: Vec2::ZERO,
             base_radius: 0.0,
             generation: 0,
+            landing: 0,
         });
     }
     if active_slots.0.get().is_empty() {

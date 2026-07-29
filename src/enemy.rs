@@ -41,7 +41,7 @@ impl EnemyKind {
         }
     }
 
-    fn radius(self) -> f32 {
+    pub fn radius(self) -> f32 {
         match self {
             EnemyKind::Dust => 0.35,
             EnemyKind::Oil => 0.5,
@@ -141,6 +141,13 @@ fn spawn_enemies(
         Enemy { kind, health: kind.max_health() },
         RigidBody::Kinematic,
         Collider::circle(kind.radius()),
+        // 課題S-17/S-24：Bubble（飛行中）・LandedBubble（着地済み）・床とは
+        // 衝突させ、敵同士は衝突させない（consts::GameLayer参照。密集しても
+        // 押し合わない）。
+        CollisionLayers::new(
+            GameLayer::Enemy,
+            [GameLayer::Floor, GameLayer::Bubble, GameLayer::LandedBubble],
+        ),
         Mesh2d(meshes.add(Circle::new(kind.radius()))),
         MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
         Transform::from_translation(pos.extend(0.0)),

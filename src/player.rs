@@ -28,11 +28,17 @@ impl Aim {
     }
 }
 
-/// ノズルの押し込み（チャージ）状態。
+/// ノズルの押し込み具合（doc/soap-issues.md 2026-07-29追記：本物のハンド
+/// ソープ容器のポンプ機構）。0.0=完全に戻った状態、1.0=最深部まで
+/// 押し込んだ状態（それ以上は噴射できない）。このリソース自体が「残量
+/// ゲージ」を兼ねる——別途UIのゲージは持たない。ノズルの見た目の高さは
+/// 常にこの値から直接計算する。
 #[derive(Resource, Default)]
-pub struct Charge {
-    pub charging: bool,
-    pub time: f32,
+pub struct NozzlePress {
+    pub depth: f32,
+    /// 次に泡を発射できるようになるまでの残り秒数（SPRAY_INTERVAL間隔で
+    /// 連射するためのクールダウン）。
+    spray_cooldown: f32,
 }
 
 pub struct PlayerPlugin;
@@ -40,18 +46,16 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Aim>()
-            .init_resource::<Charge>()
+            .init_resource::<NozzlePress>()
             .add_systems(Startup, spawn_player)
             .add_systems(
                 Update,
-                (update_aim, rotate_player_visual, handle_charge_input)
+                (update_aim, update_nozzle_press, update_player_visual)
                     .chain()
                     .run_if(in_game::<GameState>())
-                    // update_aimの回転自体はTime<Virtual>停止（pause連動）で
-                    // 自然に止まるが、handle_charge_inputのjust_pressed/
-                    // just_released判定はTimeのdeltaを見ないため、pause中に
-                    // Spaceを押すとチャージ開始・離した瞬間の発射がそのまま
-                    // 素通りしてしまう。ポーズメニュー表示中は入力そのものを
+                    // ポーズ中はTime<Virtual>が止まるのでdelta_secsベースの
+                    // press/release進行は自然に止まるが、`pressed()`の入力
+                    // 判定自体は止まらないため、念のためポーズ中は入力を
                     // 止める。
                     .run_if(not_paused),
             );
@@ -83,67 +87,82 @@ fn update_aim(time: Res<Time>, actions: Res<GutzActionState<PlayerAction>>, mut 
     aim.angle = (aim.angle + delta * time.delta_secs()).rem_euclid(TAU);
 }
 
-fn rotate_player_visual(aim: Res<Aim>, mut query: Query<&mut Transform, With<SoapDispenser>>) {
-    if let Ok(mut transform) = query.single_mut() {
-        transform.rotation = Quat::from_rotation_z(aim.angle);
-    }
-}
-
-/// Charge押下でチャージ開始、押しっぱなしでチャージ継続、離した瞬間に発射。
-fn handle_charge_input(
+/// 本物のハンドソープ容器のポンプ機構（doc/soap-issues.md 2026-07-29追記）。
+/// Chargeを押している間はノズルが沈み込みながら連続的に泡を噴射し続け、
+/// 最深部まで沈みきったら（＝ポンプストロークを使い切ったら）それ以上は
+/// 出ない。離すとバネで元の高さまで戻り、再び噴射できるようになる。
+fn update_nozzle_press(
     time: Res<Time>,
     actions: Res<GutzActionState<PlayerAction>>,
-    mut charge: ResMut<Charge>,
+    mut press: ResMut<NozzlePress>,
     aim: Res<Aim>,
     mut commands: Commands,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
     foam_quality: Res<FoamQualitySetting>,
 ) {
-    if actions.just_pressed(PlayerAction::Charge) {
-        charge.charging = true;
-        charge.time = 0.0;
+    let dt = time.delta_secs();
+    let held = actions.pressed(PlayerAction::Charge);
+
+    if held {
+        press.depth = (press.depth + dt / NOZZLE_PRESS_TIME).min(1.0);
+    } else {
+        press.depth = (press.depth - dt / NOZZLE_RELEASE_TIME).max(0.0);
+        // 離している間はクールダウンを持ち越さない（次に押した瞬間、
+        // 間を置かず最初の一発が出るようにする）。
+        press.spray_cooldown = 0.0;
     }
 
-    if charge.charging && actions.pressed(PlayerAction::Charge) {
-        charge.time = (charge.time + time.delta_secs()).min(CHARGE_MAX_TIME);
+    // ノズルが最深部（depth>=1.0、ポンプストロークを使い切った状態）に
+    // 達すると、押し続けていても何も出ない——本物のポンプが「空押し」に
+    // なるのと同じ。
+    if !held || press.depth >= 1.0 {
+        return;
     }
 
-    if actions.just_released(PlayerAction::Charge) && charge.charging {
-        let fraction = (charge.time / CHARGE_MAX_TIME).clamp(0.0, 1.0);
-        fire_bubble(
-            &mut commands,
-            &mut foam_allocator,
-            foam_quality.0.profile(),
-            aim.direction(),
-            fraction,
-        );
-        charge.charging = false;
-        charge.time = 0.0;
+    press.spray_cooldown -= dt;
+    if press.spray_cooldown > 0.0 {
+        return;
+    }
+    press.spray_cooldown += SPRAY_INTERVAL;
+
+    fire_spray_droplet(&mut commands, &mut foam_allocator, foam_quality.0.profile(), &aim);
+}
+
+/// ノズルの見た目の高さ・向きを、押し込み具合（NozzlePress::depth）と
+/// 狙い方向から毎フレーム計算する。UIのゲージを持たない代わりに、この
+/// ノズル自体の沈み込みが残量表示を兼ねる。
+fn update_player_visual(
+    aim: Res<Aim>,
+    press: Res<NozzlePress>,
+    mut query: Query<&mut Transform, With<SoapDispenser>>,
+) {
+    if let Ok(mut transform) = query.single_mut() {
+        transform.rotation = Quat::from_rotation_z(aim.angle);
+        transform.translation = nozzle_anchor(press.depth).extend(0.0);
     }
 }
 
-fn fire_bubble(
+/// ノズルのアンカー点（ここを中心に狙い方向へ回転する）。押し込み具合に
+/// 応じて沈み込む。
+fn nozzle_anchor(depth: f32) -> Vec2 {
+    Vec2::new(0.0, NOZZLE_HEIGHT - depth * NOZZLE_PRESS_STROKE)
+}
+
+/// 噴射中に連続して発射される、小さく均一な泡1粒。
+fn fire_spray_droplet(
     commands: &mut Commands,
     foam_allocator: &mut FoamSlotAllocator,
     foam_quality_profile: FoamQualityProfile,
-    aim_dir: Vec2,
-    fraction: f32,
+    aim: &Aim,
 ) {
-    let base_dir = if aim_dir.length_squared() > 0.0001 { aim_dir.normalize() } else { Vec2::X };
+    let base_dir = aim.direction();
 
-    // 不器用な操作感：溜めが浅いほど狙いがブレる。
-    let jitter = (1.0 - fraction) * CHARGE_MAX_JITTER;
-    let jitter_angle = rand::rng().random_range(-jitter..=jitter);
+    // 蛇口の水流のような自然な散らばり。
+    let jitter_angle = rand::rng().random_range(-SPRAY_JITTER..=SPRAY_JITTER);
     let dir = base_dir.rotate(Vec2::from_angle(jitter_angle));
 
-    // サイドビューでは狙い方向自体が上下左右を含むので、山なり軌道は
-    // 重力（main.rsのGravity）が自然に作る。チャージは初速の大きさだけを決める。
-    let speed = CHARGE_MIN_SPEED + (CHARGE_MAX_SPEED - CHARGE_MIN_SPEED) * fraction;
-    let velocity = dir * speed;
-
-    let spawn_pos = dir * NOZZLE_RADIUS + Vec2::new(0.0, NOZZLE_HEIGHT);
-    let radius = BUBBLE_MIN_RADIUS + (BUBBLE_MAX_RADIUS - BUBBLE_MIN_RADIUS) * fraction;
-    let power = 1 + (fraction * 2.0).floor() as i32;
+    let velocity = dir * SPRAY_SPEED;
+    let spawn_pos = dir * NOZZLE_RADIUS + nozzle_anchor(0.0);
 
     // Avian2Dの当たり判定を持つBubbleを発射する。見た目（soap.rs）はこの
     // Bubbleエンティティの位置・速度を毎フレーム自動で観測するので、ここから
@@ -154,7 +173,7 @@ fn fire_bubble(
         foam_quality_profile,
         spawn_pos,
         velocity,
-        radius,
-        power,
+        SPRAY_BUBBLE_RADIUS,
+        SPRAY_POWER,
     );
 }

@@ -2,7 +2,11 @@ use avian2d::prelude::*;
 use bevy::camera::ScalingMode;
 use bevy::prelude::*;
 
-use crate::consts::ARENA_RADIUS;
+use crate::consts::{ARENA_RADIUS, GameLayer};
+
+/// 床エンティティの目印。`bubble.rs`が「泡が床に触れたか」を判定するのに使う。
+#[derive(Component)]
+pub struct Floor;
 
 /// 床（Y=0）の見た目の厚み。コライダー自体は`Collider::half_space`による
 /// Y=0を通る無限平面なので、この厚みはあくまで見た目（Sprite）だけの値。
@@ -37,7 +41,13 @@ fn setup_scene(mut commands: Commands) {
 
     // 床（物理コライダー + 見た目のSprite）。Y=0を通る無限平面コライダーの
     // 上面がちょうどY=0に来るよう、見た目はその下に厚みを足して配置する。
-    commands.spawn((RigidBody::Static, Collider::half_space(Vec2::Y), Transform::default()));
+    commands.spawn((
+        Floor,
+        RigidBody::Static,
+        Collider::half_space(Vec2::Y),
+        CollisionLayers::new(GameLayer::Floor, [GameLayer::Bubble, GameLayer::Enemy]),
+        Transform::default(),
+    ));
     commands.spawn((
         Sprite {
             color: Color::srgb(0.62, 0.64, 0.66),

@@ -20,6 +20,10 @@ struct FoamInstance {
     lifetime: f32,
     base_radius: f32,
     generation: u32,
+    // 課題S-24：このシェーダーでは使わないが、soap_compute.wgslと同じ
+    // FoamInstance構造体（同じバッファを共有）のバイトレイアウトを保つため
+    // に必要。
+    landing: u32,
 };
 
 struct SoapView {
@@ -31,6 +35,7 @@ struct SoapView {
 };
 
 const STATE_INACTIVE: u32 = 0u;
+const STATE_FLYING: u32 = 1u;
 
 const MICROSTRUCTURE_SIMPLE: u32 = 0u;
 const MICROSTRUCTURE_NORMAL: u32 = 1u;
@@ -114,11 +119,59 @@ fn value_noise2(p: vec2<f32>) -> f32 {
     return mix(x0, x1, u.y);
 }
 
+// 課題S-20（2026-07-29）：1つのBubbleの中の5個の塊同士は重なるように
+// 配置しているので融合して見えるが、「別々に着地したBubble」同士は
+// 物理的にぴったり重ならない限りそれぞれの半径でスパッと密度が0になり、
+// 独立した丸い粒のまま——本来のメタボールが持つ「多少離れていても
+// 近ければ融合する」という性質が出ていなかった（実機確認：斜めに隣接
+// した泡が繋がらずおだんご状にならない）。
+//
+// 本来の半径（コア）のカーブはそのまま保ちつつ、その外側にもっと広く・
+// もっと弱い「橋渡し用」の裾野を足す。単体では閾値に届かない弱さなので
+// 孤立した泡の見た目はほぼ変わらないが、2つの泡が近づくと互いの裾野が
+// 重なって合算値が閾値を超え、繋ぎ目（ネック）が見えるようになる。
+const MERGE_REACH: f32 = 2.1;
+const BRIDGE_STRENGTH: f32 = 0.3;
+
+// 課題S-28（2026-07-29）：射出された瞬間から完全な丸い玉に見えてしまって
+// いた——実際のハンドソープのノズルから出るのは丸い玉ではなく、勢いよく
+// 伸びる液の筋のはず（実機確認）。飛行中（STATE_FLYING）だけ、速度方向に
+// 伸ばした涙形（ストリーク）で密度場を評価することで、「連続して伸びる
+// 液体」に見せる。着地して速度が失われれば自動的に元の丸い（そして
+// soap_compute.wgslのIMPACT扁平化で潰れた）形に戻る。
+const STREAK_MIN_SPEED: f32 = 1.0;
+const STREAK_FACTOR: f32 = 0.06;
+const STREAK_MAX: f32 = 3.2;
+
+// `p`から見た`inst`のローカル座標を、半径`scale_mult`倍の基準で正規化する。
+// 飛行中は速度方向に伸ばし、それに直交する方向を少し細くする（伸びた分
+// だけ体積感が保たれ、単に膨張したのではなく「伸びた」ように見える）。
+fn instance_local(p: vec2<f32>, inst: FoamInstance, scale_mult: f32) -> vec2<f32> {
+    let scale = inst.scale * scale_mult;
+    let speed = length(inst.velocity);
+    if (inst.state != STATE_FLYING || speed < STREAK_MIN_SPEED) {
+        return (p - inst.position) / scale;
+    }
+    let dir = inst.velocity / speed;
+    let perp = vec2<f32>(-dir.y, dir.x);
+    let rel = p - inst.position;
+    let along = dot(rel, dir);
+    let across = dot(rel, perp);
+    let stretch = min(1.0 + speed * STREAK_FACTOR, STREAK_MAX);
+    return vec2<f32>(along / (scale.x * stretch), across / (scale.y / sqrt(stretch)));
+}
+
 fn instance_density(p: vec2<f32>, inst: FoamInstance) -> f32 {
     // 楕円化：スケールで正規化してから単位円のカーネルを評価する（第10節）。
-    let local = (p - inst.position) / inst.scale;
+    let local = instance_local(p, inst, 1.0);
     let d = dot(local, local);
-    let base = max(0.0, 1.0 - d);
+    let core = max(0.0, 1.0 - d);
+
+    let reach_local = instance_local(p, inst, MERGE_REACH);
+    let reach_d = dot(reach_local, reach_local);
+    let bridge = max(0.0, 1.0 - reach_d) * BRIDGE_STRENGTH;
+
+    let base = max(core, bridge);
 
     // 課題S-16：以前はNormal/Detailed両方で±0.35*baseという強いノイズを
     // 掛けており、これが石のようなまだらな質感の主因になっていた（実機確認）。
@@ -142,8 +195,12 @@ fn instance_density(p: vec2<f32>, inst: FoamInstance) -> f32 {
 // Instanceを円（半径は長い方の軸長）で包む。楕円の外周上のどの点も
 // 中心からmax(scale.x,scale.y)より遠くにはならないので、これは
 // 「密度が非ゼロになりうる範囲」を過不足なく覆う安全な外接円になる。
+// 課題S-20：橋渡し用の裾野（MERGE_REACH）まで含めて非ゼロになりうるので、
+// そこまで広げないと早期スキップで橋渡しの寄与を取りこぼす。
+// 課題S-28：飛行中はSTREAK_MAXまで速度方向に伸びうるので、その分も
+// 余裕を持たせないと、伸びた先端が早期スキップで切り取られてしまう。
 fn bounding_radius(inst: FoamInstance) -> f32 {
-    return max(inst.scale.x, inst.scale.y);
+    return max(inst.scale.x, inst.scale.y) * MERGE_REACH * STREAK_MAX;
 }
 
 // 課題S-12：`foam_instances`はpool容量分（512）の固定長配列で、そのうち
@@ -176,6 +233,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // ——3Dのようにレイをマーチする必要はない。
     let world4 = view.world_from_clip * vec4<f32>(in.ndc, 0.0, 1.0);
     let world = world4.xy / world4.w;
+
+    // 課題S-21：床（Y=0）より下には何も描かない。着地した泡が扁平化しても
+    // 楕円の下半分は必ず床の下へわずかにめり込む（第14節）ので、これを
+    // 描かないことで「床に接する面で平らに切り取られた」シルエットになり、
+    // 丸い塊ではなく角の丸い台形のような、液体が着地して広がった見た目になる。
+    if (world.y < 0.0) {
+        discard;
+    }
 
     let density = scene_density(world);
     if (density < ALPHA_SOFT_START) {

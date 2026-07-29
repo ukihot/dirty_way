@@ -7,7 +7,7 @@ use crate::actions::PlayerAction;
 use crate::bubble::{Bubble, FoamGpuBinding, FoamSlotAllocator};
 use crate::consts::PLAYER_MAX_HEALTH;
 use crate::enemy::{Enemy, EnemySpawnTimer};
-use crate::player::Charge;
+use crate::player::NozzlePress;
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default, States)]
 pub enum GameState {
@@ -102,7 +102,7 @@ fn reset_game(
     mut commands: Commands,
     mut score: ResMut<Score>,
     mut health: ResMut<Health>,
-    mut charge: ResMut<Charge>,
+    mut press: ResMut<NozzlePress>,
     mut spawn_timer: ResMut<EnemySpawnTimer>,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
     enemies: Query<Entity, With<Enemy>>,
@@ -110,7 +110,7 @@ fn reset_game(
 ) {
     score.0 = 0;
     *health = Health::default();
-    *charge = Charge::default();
+    *press = NozzlePress::default();
     *spawn_timer = EnemySpawnTimer::default();
 
     for entity in &enemies {

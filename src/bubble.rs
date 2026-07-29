@@ -8,7 +8,28 @@ use rand::RngExt;
 use crate::consts::*;
 use crate::enemy::{Enemy, Trapped};
 use crate::quality::FoamQualityProfile;
+use crate::scene::Floor;
 use crate::state::{GameState, Score};
+
+/// 泡が何の上に着地したか（課題S-24、2026-07-29）。まだ飛行中はFlying。
+/// soap.rs/soap_compute.wgsl側で見た目の扁平化具合を変えるのに使う——
+/// 床への直接着地はしっかり潰れて広がるが、既存の泡だまりの上への着地は
+/// 嵩をあまり失わず、メタボール融合で高さが積み上がっていくように見せる。
+///
+/// これはGPU側の「着地したかどうか」の判定信号も兼ねる。以前はGPU側
+/// （soap_compute.wgsl）が`position.y <= floor_height + base_radius`という
+/// 床基準の絶対座標だけで着地を判定していたが、泡だまりの上に着地した泡は
+/// 床よりずっと高い位置で静止するため、この条件が永久に成立せず、
+/// 丸いまま固まってしまっていた。着地の判定そのものをMain World側
+/// （このenum）の権威に一本化し、Render World側は言われた通りに従うだけに
+/// する（doc：「物理判定はAvian2D、見た目はGPU」という責務分担と同じ発想）。
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum LandingSurface {
+    #[default]
+    Flying,
+    Floor,
+    Pile,
+}
 
 /// プレイヤーが発射する泡の当たり判定（ゲームロジック専用、見た目は持たない）。
 /// 見た目は `soap.rs` のGPUリアルタイム液体表現が別途担当する。
@@ -24,6 +45,11 @@ pub struct Bubble {
     pub radius: f32,
     /// このバブルが既にダメージを与えた敵（同じ相手に毎フレーム連続ダメージしないため）。
     hit_enemies: Vec<Entity>,
+    pub landing: LandingSurface,
+    /// 課題S-26：床・泡だまりに触れていて、かつ速度がBUBBLE_SETTLE_SPEED
+    /// を下回っている状態が続いている秒数。BUBBLE_SETTLE_DURATIONに達したら
+    /// 本当に静止したとみなしてStatic化する（settle_landed_bubbles参照）。
+    settle_timer: f32,
 }
 
 /// このBubbleエンティティが対応するGPU側Foam Instanceのスロット（doc第31節）。
@@ -99,7 +125,10 @@ impl FoamSlotAllocator {
     /// 品質段階ごとの同時表示上限）に達していたらスロットを払い出さない
     /// （doc/soap-issues.md
     /// S-11a）。Poolの容量そのものは常に512のまま変えない。
-    fn allocate(&mut self, quality: FoamQualityProfile) -> Option<FoamGpuBinding> {
+    ///
+    /// `pub(crate)`：Bubble以外（player.rsのチャージ中プレビュー）からも
+    /// 同じスロットプールを間借りするため、クレート内には公開する。
+    pub(crate) fn allocate(&mut self, quality: FoamQualityProfile) -> Option<FoamGpuBinding> {
         if self.active_bindings >= quality.max_aggregates {
             return None;
         }
@@ -123,13 +152,25 @@ impl FoamSlotAllocator {
     }
 }
 
+/// 着地済み（＝次のBubbleが乗れる「地形」になった）の泡につける目印。
+/// `settle_landed_bubbles`は毎フレーム全Bubbleを見なくて済むよう、まだ
+/// 着地していないもの（このマーカーが無いもの）だけを見る（課題S-27：
+/// 着地後もBubble自体はDynamicのままで、Staticにはしない）。
+#[derive(Component)]
+struct Landed;
+
 pub struct BubblePlugin;
 
 impl Plugin for BubblePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FoamSlotAllocator>().add_systems(
             Update,
-            (tick_bubble_lifetime, despawn_out_of_bounds, bubble_enemy_interaction)
+            (
+                tick_bubble_lifetime,
+                settle_landed_bubbles,
+                despawn_out_of_bounds,
+                bubble_enemy_interaction,
+            )
                 .run_if(in_game::<GameState>()),
         );
     }
@@ -145,29 +186,55 @@ pub fn spawn_bubble(
     power: i32,
 ) {
     let mut entity = commands.spawn((
-        Bubble { power, life: 0.0, radius, hit_enemies: Vec::new() },
+        Bubble {
+            power,
+            life: 0.0,
+            radius,
+            hit_enemies: Vec::new(),
+            landing: LandingSurface::Flying,
+            settle_timer: 0.0,
+        },
         RigidBody::Dynamic,
         Collider::circle(radius),
-        // 泡の見た目（soap.rs）は「跳ねるボール」ではなく「着地して潰れる
-        // 泡の塊」として描画したい。Restitution=0.12/Friction=0.05という
-        // 旧設定は、実際に動かすと「ごつんと弾んで転がる硬いボール」に感じ
-        // られてしまっていた（doc/soap-issues.md S-15）。ハンドソープらしい
-        // 「その場でぺたっと潰れて止まる」感触にするため、反発をほぼ0にし、
-        // 摩擦・減衰を強めて着地後ほぼ即座に静止させる。
+        // 課題S-18：飛行中はドロドロした重い液体でも「重力だけで山なりに飛ぶ」
+        // のが自然で、LinearDampingを飛行中にもかけていると空気抵抗のような
+        // 不自然なもったり感が出て、「滑りの悪い雪玉」のように見えてしまって
+        // いた（実機確認）。着地は`settle_landed_bubbles`が検知した瞬間に
+        // RigidBody::Staticへ切り替えて完全停止させる（S-15の「転がらず
+        // 即座に静止する」という要求は、摩擦・減衰のチューニングではなく
+        // Static化そのもので満たす）。そのため、ここでのFriction/Damping系は
+        // 着地からStatic化までのごく短い1フレームの保険程度の意味しか無い。
         Restitution::new(0.02),
         Friction::new(0.7),
-        LinearDamping(0.3),
-        AngularDamping(0.8),
+        LinearDamping(0.02),
+        AngularDamping(0.2),
         // 球コライダーは、摩擦があっても一度「滑り」から「転がり」に転じると
         // 追加の減速要因が無くなり、AngularDamping頼みでずるずる長く転がって
-        // しまう（doc/soap-issues.md 2026-07-28追記：MPM泥ソルバのように
-        // 「着地したら飛び散ることはあっても転がることは絶対にない」挙動が
-        // 欲しいのに、回転が自由だとFriction=0.7でも「転がる球」に見えてしまう
-        // 問題）。回転そのものを禁止することで、接地時のFrictionが常に
-        // 並進速度を直接削る「滑って止まる」挙動になり、転がりが原理的に
-        // 発生しなくなる。見た目（soap.rs）はTransformの回転を一切参照しない
+        // しまう。回転そのものを禁止することで、着地後の余計な転がりが
+        // 発生しない。見た目（soap.rs）はTransformの回転を一切参照しない
         // ので、副作用はない。
         LockedAxes::ROTATION_LOCKED,
+        // 課題S-23：飛行中のBubble同士は衝突させない。SPRAY_INTERVAL間隔の
+        // 連続噴射では直前に撃った粒と至近距離で常に接触することになり、
+        // 衝突させると低反発・高摩擦・回転ロックの組み合わせで互いに
+        // 引っかかり合い、鎖のように連結して重力に逆らって空中に留まって
+        // しまっていた（実機確認）。
+        // 課題S-24：ただし既に着地した泡だまり（LandedBubble）とは衝突
+        // させる——そうしないと新しい泡が既存の山を素通りして必ず床まで
+        // 落ちてしまい、「積み上がる」ことが一切できなくなる。これにより
+        // 新しい泡は他の飛行中の泡はすり抜けつつ、既存の泡だまりの上には
+        // 正しく乗って積み上がっていく。
+        // 課題S-27（2026-07-29）：Enemyはここに含めない。敵との接触判定は
+        // `bubble_enemy_interaction`が距離ベースで別途行う（コメント参照）。
+        // Avianの物理衝突に任せると、KinematicのEnemyがDynamicのBubbleを
+        // 押し出してしまう（Kinematicは常に他を押しのける側になるのが
+        // 物理エンジンの標準挙動）。以前はBubbleを`RigidBody::Static`化
+        // することでこれを回避していたが、Staticは重力を一切受けないため、
+        // 積み上がった泡の下側だけが寿命で消えても上側が宙に浮いたまま
+        // 残ってしまうという致命的な副作用があった（実機確認）。Bubbleは
+        // 常にDynamicのまま——支えを失えば自然に落下し直す——という原則を
+        // 守るため、Enemyとの接触検知だけを物理から切り離す。
+        CollisionLayers::new(GameLayer::Bubble, [GameLayer::Floor, GameLayer::LandedBubble]),
         LinearVelocity(velocity),
         Transform::from_translation(position.extend(0.0)),
     ));
@@ -175,6 +242,63 @@ pub fn spawn_bubble(
     // だけ諦める。ゲームロジックには影響しない。
     if let Some(binding) = allocator.allocate(quality) {
         entity.insert(binding);
+    }
+}
+
+/// 課題S-27：床・泡だまりに触れた瞬間ではなく、本当に静止する（BUBBLE_
+/// SETTLE_SPEED未満の速度がBUBBLE_SETTLE_DURATION秒続く）まで待ってから
+/// 「着地済み」とみなす。触れた瞬間に即座に確定していた頃は、飛んで来た
+/// 軌跡の形がそのまま「蛇」のように固まって残ってしまっていた。液体らしく、
+/// 実際に落ち着くまでは重力・摩擦に従って山の斜面を滑らせ続けることで、
+/// 新しい泡が既存の山の低いところへ自然に流れ込み、「山が更新されていく」
+/// ように見せる（consts::BUBBLE_SETTLE_SPEEDのコメント参照）。
+///
+/// 着地後もBubbleは`RigidBody::Dynamic`のまま変えない（課題S-27）——
+/// CollisionLayersのmembershipsだけをBubble→LandedBubbleへ切り替え、
+/// 以後「次のBubbleが乗れる地形」として振る舞うようにする（課題S-24）。
+/// Dynamicのまま・重力を受け続けるままにしておくことで、支えにしていた
+/// 別のBubbleが寿命で消えたときに、その上の泡が自然に落下し直せる
+/// （以前`RigidBody::Static`にしていた頃は、重力を一切受けないせいで
+/// 下が消えても上が宙に浮いたまま残ってしまっていた）。
+fn settle_landed_bubbles(
+    mut commands: Commands,
+    time: Res<Time>,
+    collisions: Collisions,
+    floor: Query<Entity, With<Floor>>,
+    landed: Query<Entity, With<Landed>>,
+    mut bubbles: Query<(Entity, &mut Bubble, &LinearVelocity), Without<Landed>>,
+) {
+    let Ok(floor_entity) = floor.single() else { return };
+    let dt = time.delta_secs();
+    for (entity, mut bubble, velocity) in &mut bubbles {
+        // 課題S-25：スポーン直後は着地判定そのものを無視する（コメント参照）。
+        // 泡だまりがノズル付近まで育つと、生まれたばかりの泡がまだ動いて
+        // いないその場で既存の山と接触してしまい、飛び出す前に固まって
+        // 「かまくら」状に積み上がってしまっていた。
+        if bubble.life < BUBBLE_LANDING_GRACE_PERIOD {
+            continue;
+        }
+
+        let landed_on_pile =
+            collisions.entities_colliding_with(entity).any(|other| landed.contains(other));
+        let touched_floor =
+            collisions.entities_colliding_with(entity).any(|other| other == floor_entity);
+        let touching_ground = landed_on_pile || touched_floor;
+
+        if touching_ground && velocity.0.length() < BUBBLE_SETTLE_SPEED {
+            bubble.settle_timer += dt;
+        } else {
+            bubble.settle_timer = 0.0;
+        }
+        if bubble.settle_timer < BUBBLE_SETTLE_DURATION {
+            continue;
+        }
+
+        bubble.landing = if landed_on_pile { LandingSurface::Pile } else { LandingSurface::Floor };
+        commands.entity(entity).insert((
+            Landed,
+            CollisionLayers::new(GameLayer::LandedBubble, [GameLayer::Floor, GameLayer::Bubble]),
+        ));
     }
 }
 
@@ -215,18 +339,28 @@ fn despawn_out_of_bounds(
 /// 泡は敵に触れても即ポップしない。接触している間は毎フレーム鈍足状態を
 /// 更新し続け（＝埋もれて動けなくなる）、
 /// ダメージだけは初回接触時に一度だけ与える。
+///
+/// 課題S-27：Avianの物理衝突（`Collisions`）ではなく、距離ベースの手動判定
+/// にしている。物理衝突に任せると、KinematicのEnemyがDynamicのBubbleを
+/// 押し出してしまう（Kinematicは常に他を押しのける側になるのが物理
+/// エンジンの標準挙動で、これを防ぐにはBubbleをStatic/Kinematic化する
+/// しかなく、Staticには「支えが消えても宙に浮いたまま」という別の致命的
+/// 問題があった）。接触検知だけを物理から切り離すことで、Bubbleは常に
+/// Dynamicのまま（＝常に重力に従う）にしつつ、Enemyから押されることも
+/// 無くなる。
 fn bubble_enemy_interaction(
     mut commands: Commands,
-    collisions: Collisions,
-    mut bubbles: Query<(Entity, &mut Bubble)>,
-    mut enemies: Query<&mut Enemy>,
+    mut bubbles: Query<(&Transform, &mut Bubble)>,
+    mut enemies: Query<(Entity, &Transform, &mut Enemy)>,
     mut score: ResMut<Score>,
 ) {
-    for (bubble_entity, mut bubble) in &mut bubbles {
-        for other in collisions.entities_colliding_with(bubble_entity) {
-            let Ok(mut enemy) = enemies.get_mut(other) else {
+    for (bubble_transform, mut bubble) in &mut bubbles {
+        let bubble_pos = bubble_transform.translation.xy();
+        for (other, enemy_transform, mut enemy) in &mut enemies {
+            let dist = bubble_pos.distance(enemy_transform.translation.xy());
+            if dist > bubble.radius + enemy.kind.radius() {
                 continue;
-            };
+            }
 
             // try_insert/try_despawn: 同じ敵が複数の泡に同時接触していると、
             // 片方の泡が先に倒して despawn を積んだ後にもう片方が Trapped を

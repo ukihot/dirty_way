@@ -4,8 +4,6 @@ use bevy_gutzgutz::lifecycle::{GutzPaused, in_game};
 use bevy_gutzgutz::ui::{GutzUiScreenClosed, GutzUiScreenOpened, GutzUiStack};
 
 use crate::bubble::FoamGpuBinding;
-use crate::consts::CHARGE_MAX_TIME;
-use crate::player::Charge;
 use crate::quality::FoamQualitySetting;
 use crate::state::{GameState, Health, SaveData, Score};
 
@@ -27,8 +25,6 @@ pub enum UiScreen {
 struct ScoreText;
 #[derive(Component)]
 struct HealthText;
-#[derive(Component)]
-struct ChargeBarFill;
 /// Title/Paused/GameOverのどの画面ルートにも共通して付ける印。1画面しか
 /// 同時に開かない（`GutzUiStack`は常にLIFOで1枚だけアクティブ）前提で、
 /// despawn側は「どの画面が閉じたか」を区別せず、開いているルートを全部
@@ -43,8 +39,7 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, setup_hud)
             .add_systems(
                 Update,
-                (update_score_text, update_health_text, update_charge_bar)
-                    .run_if(in_game::<GameState>()),
+                (update_score_text, update_health_text).run_if(in_game::<GameState>()),
             )
             // Foam数/Qualityというゲーム固有のベンチマーク値（doc/soap-issues.md
             // S-11a）は、GutzDevtoolsPlugin（F3）のオーバーレイにGutzDebugStats
@@ -87,37 +82,11 @@ fn setup_hud(mut commands: Commands) {
                 TextColor(Color::srgb(1.0, 0.6, 0.7)),
             ));
         });
-
-    // 下部中央：チャージゲージ
-    commands
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::FlexEnd,
-            align_items: AlignItems::Center,
-            padding: UiRect::bottom(Val::Px(24.0)),
-            ..default()
-        })
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    width: Val::Px(240.0),
-                    height: Val::Px(18.0),
-                    border: UiRect::all(Val::Px(2.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.6)),
-                BorderColor::all(Color::WHITE),
-            ))
-            .with_children(|track| {
-                track.spawn((
-                    ChargeBarFill,
-                    Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() },
-                    BackgroundColor(Color::srgb(0.3, 0.85, 1.0)),
-                ));
-            });
-        });
+    // 課題S-19（2026-07-29）：チャージ→離すで1発、という仕組みをやめ、本物の
+    // ハンドソープ容器のポンプのように「押している間ノズルが沈み込みながら
+    // 連続噴射し、沈みきったら止まる」方式にしたため、残量ゲージのUIは
+    // 不要になった——ノズル自体の高さ（player.rs::update_player_visual）が
+    // そのまま残量表示を兼ねる。
 }
 
 fn update_score_text(score: Res<Score>, mut query: Query<&mut Text, With<ScoreText>>) {
@@ -135,13 +104,6 @@ fn update_health_text(health: Res<Health>, mut query: Query<&mut Text, With<Heal
     }
     if let Ok(mut text) = query.single_mut() {
         text.0 = format!("HP: {}", health.0.max(0));
-    }
-}
-
-fn update_charge_bar(charge: Res<Charge>, mut query: Query<&mut Node, With<ChargeBarFill>>) {
-    let fraction = (charge.time / CHARGE_MAX_TIME).clamp(0.0, 1.0) * 100.0;
-    if let Ok(mut node) = query.single_mut() {
-        node.width = Val::Percent(if charge.charging { fraction } else { 0.0 });
     }
 }
 
