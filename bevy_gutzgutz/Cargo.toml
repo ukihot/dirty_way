@@ -57,7 +57,7 @@ avian3d = { version = "0.7.0", optional = true }
 bevy_egui = { version = "0.41.1", optional = true }
 # input（TOMLバインディング設定）とsave（TOMLセーブデータ）が共有する依存。
 serde = { version = "1", features = ["derive"], optional = true }
-toml = { version = "1.1.3+spec-1.1.0", optional = true }
+toml = { version = "1.1.4+spec-1.1.0", optional = true }
 # GutzSteamPlugin。Client Resource化・コールバックの毎フレームポンプという
 # ボイラープレートは既にこのcrateが解決してくれているので、gutzgutzが
 # 薄く再発明する意味は無い（Bevy/Avian3D本体を薄くラップしない、という
