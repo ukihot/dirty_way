@@ -1,8 +1,7 @@
 //! FPS/Physics Debug/Spawn Entity/Time Scale/Skip Level/God Mode/Reload Scene/
-//! Screenshotの8機能を提供する開発者向けオーバーレイ（doc/gutzgutz-requirements.md
-//! 5節）。表示はegui（5.2節）で行い、本番プレイヤー向けUI（bevy_ui）とは実装方式
-//! ごと分離する。`devtools` featureを外せばリリースビルドの依存グラフから
-//! 完全に消える（5.3節）。
+//! Screenshotの8機能を提供する開発者向けオーバーレイ。表示はeguiで行い、
+//! 本番プレイヤー向けUI（bevy_ui）とは実装方式ごと分離する。`devtools`
+//! featureを外せばリリースビルドの依存グラフから完全に消える。
 //!
 //! "Level"や"Scene再構築"はゲームごとに構造が異なるため、gutzgutzは
 //! `GutzDevtoolsEvent`の発行だけに留め、実際の処理はゲーム側が

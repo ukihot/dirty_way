@@ -39,6 +39,16 @@ pub const BUBBLE_LIFETIME: f32 = 6.0;
 /// S-09の教訓）。
 pub const FOAM_INSTANCE_POOL_SIZE: u32 = 512;
 
+/// 1つのBubbleが同時に使うFoam Instanceスロット数（doc/soap-issues.md
+/// 2026-07-28追記）。1発=1個の孤立した楕円体だと、どれだけ扁平化しても
+/// 「潰れたボール」にしか見えず、メタボール本来の「複数の塊が寄り集まって
+/// 融合した液体」という見た目にならない（soap_render.wgslのDENSITY_THRESHOLD
+/// コメント参照：旧アーキテクチャは複数Instanceの合算で閾値を超えることを
+/// 前提にしていた）。ゲームロジック（Avianの当たり判定）は引き続き1発=1
+/// RigidBodyのままにし、見た目だけ複数の小さな塊をBubble中心の周りに重ねて
+/// 配置し直すことで、その融合効果を取り戻す。
+pub const FOAM_SUB_INSTANCES: usize = 5;
+
 /// 敵が泡に埋もれている間の鈍足倍率と、接触が切れてから鈍足が続く猶予秒数。
 pub const TRAPPED_SPEED_MULTIPLIER: f32 = 0.15;
 pub const TRAPPED_LINGER_TIME: f32 = 0.5;

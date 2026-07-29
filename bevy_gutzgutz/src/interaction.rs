@@ -1,10 +1,9 @@
-//! Avian3Dの上に乗る、複数ゲームで繰り返し使う物理インタラクションの便利機能群
-//! （doc/gutzgutz-requirements.md 6節）。
+//! Avian3Dの上に乗る、複数ゲームで繰り返し使う物理インタラクションの便利機能群。
 //!
 //! Avian3D自体のAPI（`RigidBody`/`Collider`等）はラップしない。ここにあるのは
 //! raycast/grab-drag/explosion/impulseのような、Avian3Dの型をそのまま
 //! 受け渡しする薄いユーティリティだけ。common collision layersはスコープ外
-//! （同6節、レイヤー体系はゲームごとに違いすぎるため）。
+//! （レイヤー体系はゲームごとに違いすぎるため）。
 
 mod explosion;
 mod grab_drag;

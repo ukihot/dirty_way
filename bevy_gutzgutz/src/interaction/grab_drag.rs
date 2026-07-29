@@ -57,22 +57,25 @@ fn grab_input(
     if mouse.just_released(settings.mouse_button) {
         state.grabbed = None;
     }
-    if mouse.just_pressed(settings.mouse_button) {
-        let (camera, camera_transform) = *camera;
-        if let Some(ray) = cursor_ray(camera, camera_transform, &window) {
-            let hit = spatial_query.cast_ray(
-                ray.origin,
-                ray.direction,
-                settings.max_grab_distance,
-                true,
-                &SpatialQueryFilter::default(),
-            );
-            if let Some(hit) = hit
-                && rigid_bodies.get(hit.entity).is_ok_and(RigidBody::is_dynamic)
-            {
-                state.grabbed = Some((hit.entity, hit.distance));
-            }
-        }
+    if !mouse.just_pressed(settings.mouse_button) {
+        return;
+    }
+
+    // grab_apply（このすぐ下）と同じ、ガード節を並べて早期returnする形に
+    // 揃える——「掴めたら`state.grabbed`を更新する」以外は全部脱出条件。
+    let (camera, camera_transform) = *camera;
+    let Some(ray) = cursor_ray(camera, camera_transform, &window) else { return };
+    let Some(hit) = spatial_query.cast_ray(
+        ray.origin,
+        ray.direction,
+        settings.max_grab_distance,
+        true,
+        &SpatialQueryFilter::default(),
+    ) else {
+        return;
+    };
+    if rigid_bodies.get(hit.entity).is_ok_and(RigidBody::is_dynamic) {
+        state.grabbed = Some((hit.entity, hit.distance));
     }
 }
 

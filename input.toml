@@ -1,0 +1,8 @@
+# dirty_way キー割り当て設定（GutzInputPlugin、bevy_gutzgutz）。
+# ここを書き換えるだけで再ビルドせずにキー割り当てを変更できる。
+# 対応するキー/ボタン名は bevy_gutzgutz/src/input/source.rs の parse() を参照。
+[bindings]
+rotate_left = ["KeyA"]
+rotate_right = ["KeyD"]
+charge = ["Space"]
+restart = ["KeyR"]

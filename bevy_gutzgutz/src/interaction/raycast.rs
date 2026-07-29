@@ -9,8 +9,8 @@ pub fn cursor_ray(camera: &Camera, camera_transform: &GlobalTransform, window: &
 }
 
 /// プライマリウィンドウのカーソル位置から、Avian3Dの最初のレイヒットを返す
-/// 薄いヘルパー（doc/gutzgutz-requirements.md 6節）。Avian3D自体のAPI
-/// （`SpatialQuery`/`RayHitData`）はそのまま呼び出し側に渡し、隠蔽しない。
+/// 薄いヘルパー。Avian3D自体のAPI（`SpatialQuery`/`RayHitData`）はそのまま
+/// 呼び出し側に渡し、隠蔽しない。
 pub fn cast_ray_from_cursor(
     spatial_query: &SpatialQuery,
     camera: &Camera,

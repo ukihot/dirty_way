@@ -1,13 +1,19 @@
-//! gutzgutz — 自社ゲーム開発共通基盤（doc/gutzgutz-requirements.md）。
+//! gutzgutz — 自社ゲーム開発共通基盤（README.md）。
 //!
 //! Bevy/Avian3D本体はラップしない。複数のゲームで繰り返し使うことになる
 //! 「便利機能」「開発基盤」だけを、Cargo feature単位のプラグインとして提供する。
 //! ゲーム側はAvian3D・Bevyを直接使ってよい。
 
+#[cfg(feature = "atlas")]
+pub mod atlas;
+#[cfg(feature = "atlas-build")]
+pub mod atlas_build;
 #[cfg(feature = "devtools")]
 pub mod devtools;
 #[cfg(feature = "interaction")]
 pub mod interaction;
+#[cfg(feature = "lifecycle")]
+pub mod lifecycle;
 
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -25,10 +31,14 @@ pub mod ui;
 /// `use bevy_gutzgutz::prelude::*;` で有効化済みfeature分のプラグイン・型が
 /// まとめて見えるようにする窓口。
 pub mod prelude {
+    #[cfg(feature = "atlas")]
+    pub use crate::atlas::*;
     #[cfg(feature = "devtools")]
     pub use crate::devtools::*;
     #[cfg(feature = "interaction")]
     pub use crate::interaction::*;
+    #[cfg(feature = "lifecycle")]
+    pub use crate::lifecycle::*;
 
     #[cfg(feature = "audio")]
     pub use crate::audio::*;

@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-/// 任意のゲームがdevtoolsオーバーレイに行を追加できる汎用チャンネル
-/// （doc/gutzgutz-requirements.md 5.1節）。ゲーム側は`set`で値を登録するだけで、
-/// 表示方法（現在はegui、将来差し替わる可能性）はgutzgutz側が決める。
+/// 任意のゲームがdevtoolsオーバーレイに行を追加できる汎用チャンネル。
+/// ゲーム側は`set`で値を登録するだけで、表示方法（現在はegui、将来
+/// 差し替わる可能性）はgutzgutz側が決める。
 ///
 /// 挿入順を表示順として保つため、値本体（HashMap）とは別に挿入順の
 /// キー一覧を保持する。

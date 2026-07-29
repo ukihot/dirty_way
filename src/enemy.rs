@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use rand::Rng;
+use bevy_gutzgutz::lifecycle::in_game;
+use rand::RngExt;
 
 use crate::consts::*;
 use crate::state::{GameState, Health};
@@ -17,8 +18,8 @@ pub enum EnemyKind {
 }
 
 impl EnemyKind {
-    fn random(rng: &mut impl Rng) -> Self {
-        match rng.gen_range(0..100) {
+    fn random(rng: &mut impl RngExt) -> Self {
+        match rng.random_range(0..100) {
             0..=44 => EnemyKind::Dust,
             45..=84 => EnemyKind::Oil,
             _ => EnemyKind::Mud,
@@ -109,7 +110,7 @@ impl Plugin for EnemyPlugin {
             Update,
             (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center)
                 .chain()
-                .run_if(in_state(GameState::Playing)),
+                .run_if(in_game::<GameState>()),
         );
     }
 }
@@ -131,8 +132,8 @@ fn spawn_enemies(
         return;
     }
 
-    let mut rng = rand::thread_rng();
-    let angle = rng.gen_range(0.0..TAU);
+    let mut rng = rand::rng();
+    let angle = rng.random_range(0.0..TAU);
     let kind = EnemyKind::random(&mut rng);
     let pos = Vec3::new(angle.cos(), 0.0, angle.sin()) * ENEMY_SPAWN_RADIUS;
 

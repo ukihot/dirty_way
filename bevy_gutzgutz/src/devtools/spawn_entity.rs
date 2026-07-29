@@ -2,8 +2,7 @@ use bevy::prelude::*;
 
 /// devtoolsの「その場で任意エンティティを生成する」機能のレジストリ。
 /// ゲーム側が`register`で生成関数を登録し、gutzgutz側は名前の一覧表示と
-/// 呼び出しだけを担当する（doc/gutzgutz-requirements.md 5節）。gutzgutzは
-/// ゲームのプレファブ構造を一切知らない。
+/// 呼び出しだけを担当する。gutzgutzはゲームのプレファブ構造を一切知らない。
 #[derive(Resource, Default)]
 pub struct GutzSpawnRegistry {
     entries: Vec<(String, Box<dyn Fn(&mut Commands, Vec3) + Send + Sync>)>,

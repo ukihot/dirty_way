@@ -40,8 +40,14 @@ use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
 
 use crate::bubble::{Bubble, FoamGpuBinding};
-use crate::consts::FOAM_INSTANCE_POOL_SIZE;
+use crate::consts::{FOAM_INSTANCE_POOL_SIZE, FOAM_SUB_INSTANCES};
 use crate::quality::{FoamQuality, FoamQualitySetting};
+
+/// クラスターを構成する各塊の半径。等倍だと`cluster_offsets`のオフセット幅
+/// （0.45 * radius）に対して塊が大きくなりすぎ、個々のInstanceが重なり合う
+/// というよりBubble本体より一回り大きい塊が並ぶだけになる。少し小さくして
+/// 「複数の塊が寄り集まって１つの塊に融合している」という見た目に寄せる。
+const FOAM_SUB_INSTANCE_RADIUS_SCALE: f32 = 0.75;
 
 pub struct SoapPlugin;
 
@@ -173,13 +179,20 @@ fn extract_foam_aggregates(
 ) {
     extracted.0.clear();
     for (transform, velocity, bubble, binding) in &bubbles {
-        extracted.0.push(ExtractedAggregate {
-            slot: binding.slot,
-            generation: binding.generation,
-            position: transform.translation,
-            velocity: velocity.0,
-            radius: bubble.radius,
-        });
+        // 1 Bubble = 1 RigidBodyのままだが、見た目は`FOAM_SUB_INSTANCES`個の
+        // 塊をBubble中心の周りにずらして重ね、メタボール融合させる
+        // （consts::FOAM_SUB_INSTANCES参照）。全サブInstanceは同じ
+        // position.y・velocityを共有するので、着地判定はまとまって同時に
+        // 起こる（soap_compute.wgslの状態遷移はY座標基準のため）。
+        for i in 0..FOAM_SUB_INSTANCES {
+            extracted.0.push(ExtractedAggregate {
+                slot: binding.slots[i],
+                generation: binding.generation,
+                position: transform.translation + binding.offsets[i] * bubble.radius,
+                velocity: velocity.0,
+                radius: bubble.radius * FOAM_SUB_INSTANCE_RADIUS_SCALE,
+            });
+        }
     }
 }
 

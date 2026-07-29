@@ -1,8 +1,11 @@
 use std::f32::consts::TAU;
 
 use bevy::prelude::*;
-use rand::Rng;
+use bevy_gutzgutz::input::GutzActionState;
+use bevy_gutzgutz::lifecycle::in_game;
+use rand::RngExt;
 
+use crate::actions::PlayerAction;
 use crate::bubble::{FoamSlotAllocator, spawn_bubble};
 use crate::consts::*;
 use crate::quality::{FoamQualityProfile, FoamQualitySetting};
@@ -41,7 +44,7 @@ impl Plugin for PlayerPlugin {
                 Update,
                 (update_aim, rotate_player_visual, handle_charge_input)
                     .chain()
-                    .run_if(in_state(GameState::Playing)),
+                    .run_if(in_game::<GameState>()),
             );
     }
 }
@@ -62,13 +65,13 @@ fn spawn_player(
     ));
 }
 
-/// A = 反時計回り、D = 時計回りでノズルの向きを回転させる。
-fn update_aim(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, mut aim: ResMut<Aim>) {
+/// RotateLeft = 反時計回り、RotateRight = 時計回りでノズルの向きを回転させる。
+fn update_aim(time: Res<Time>, actions: Res<GutzActionState<PlayerAction>>, mut aim: ResMut<Aim>) {
     let mut delta = 0.0;
-    if keyboard.pressed(KeyCode::KeyA) {
+    if actions.pressed(PlayerAction::RotateLeft) {
         delta += AIM_ROTATE_SPEED;
     }
-    if keyboard.pressed(KeyCode::KeyD) {
+    if actions.pressed(PlayerAction::RotateRight) {
         delta -= AIM_ROTATE_SPEED;
     }
     aim.angle = (aim.angle + delta * time.delta_secs()).rem_euclid(TAU);
@@ -80,26 +83,26 @@ fn rotate_player_visual(aim: Res<Aim>, mut query: Query<&mut Transform, With<Soa
     }
 }
 
-/// SPACE 押下でチャージ開始、押しっぱなしでチャージ継続、離した瞬間に発射。
+/// Charge押下でチャージ開始、押しっぱなしでチャージ継続、離した瞬間に発射。
 fn handle_charge_input(
     time: Res<Time>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<GutzActionState<PlayerAction>>,
     mut charge: ResMut<Charge>,
     aim: Res<Aim>,
     mut commands: Commands,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
     foam_quality: Res<FoamQualitySetting>,
 ) {
-    if keyboard.just_pressed(KeyCode::Space) {
+    if actions.just_pressed(PlayerAction::Charge) {
         charge.charging = true;
         charge.time = 0.0;
     }
 
-    if charge.charging && keyboard.pressed(KeyCode::Space) {
+    if charge.charging && actions.pressed(PlayerAction::Charge) {
         charge.time = (charge.time + time.delta_secs()).min(CHARGE_MAX_TIME);
     }
 
-    if keyboard.just_released(KeyCode::Space) && charge.charging {
+    if actions.just_released(PlayerAction::Charge) && charge.charging {
         let fraction = (charge.time / CHARGE_MAX_TIME).clamp(0.0, 1.0);
         fire_bubble(
             &mut commands,
@@ -124,7 +127,7 @@ fn fire_bubble(
 
     // 不器用な操作感：溜めが浅いほど狙いがブレる。
     let jitter = (1.0 - fraction) * CHARGE_MAX_JITTER;
-    let jitter_angle = rand::thread_rng().gen_range(-jitter..=jitter);
+    let jitter_angle = rand::rng().random_range(-jitter..=jitter);
     let dir = Quat::from_rotation_y(jitter_angle) * base_dir;
 
     let horizontal_speed = CHARGE_MIN_SPEED + (CHARGE_MAX_SPEED - CHARGE_MIN_SPEED) * fraction;

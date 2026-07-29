@@ -43,7 +43,23 @@ bevy = { version = "0.19.0", default-features = false, features = [
     "vorbis",
 ] }
 avian3d = "0.7.0"      # 3D物理演算（旧 bevy_xpbd）
-rand = "0.8"            # 敵の出現角度・種類やブレの乱数
+rand = "0.10"            # 敵の出現角度・種類やブレの乱数
+# SaveData（state.rs）のシリアライズに使う。bevy_gutzgutzのsave/input
+# featureはserdeを内部で使うが、dirty_way自身の`#[derive(Serialize,
+# Deserialize)]`のためにも直接の依存として持つ必要がある。
+serde = { version = "1", features = ["derive"] }
+
+# 自社ゲーム開発共通基盤（bevy_gutzgutz/README.md）。interactionはdirty_way
+# にまだ対応する使い道がないため有効化しない（2作目で同じものが必要に
+# なってから）。atlasはbuild.rsが生成するassets/generated/atlas/を
+# GutzAtlasPluginが読む（ランタイム側）。
+bevy_gutzgutz = { path = "bevy_gutzgutz", features = ["devtools", "lifecycle", "input", "ui", "save", "steam", "atlas"] }
+
+[build-dependencies]
+# build.rsからassets/character/のアトラス生成（atlas_build::pack）を呼ぶ
+# ためだけの依存。atlas-buildはBevy本体をコード上importしない
+# （bevy_gutzgutz/README.md参照）。
+bevy_gutzgutz = { path = "bevy_gutzgutz", default-features = false, features = ["atlas-build"] }
 
 # Bevy公式が推奨するdevプロファイル調整。opt-level=0（デフォルト）のままだと
 # Bevy/wgpu/avianが最適化なしで動くため、コンパイルだけでなく実行時speed

@@ -1,10 +1,10 @@
+use avian3d::dynamics::rigid_body::forces::ForcesItem;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
 /// 継続的な力（毎フレーム呼び、Avian3Dが物理stepのdtで積分する）を与える。
 /// grab/dragのようなバネ追従に向く。Avian3Dの`Forces` QueryData
-/// （`Query<Forces>`）をそのまま薄くラップしただけ（doc/gutzgutz-requirements.md
-/// 6節）。
+/// （`Query<Forces>`）をそのまま薄くラップしただけ。
 pub fn apply_force(forces: &mut ForcesItem<'_, '_>, force: Vec3) {
     forces.apply_force(force);
 }

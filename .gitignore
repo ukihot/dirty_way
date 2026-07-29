@@ -1,1 +1,4 @@
-/target
+**/target
+# build.rs（bevy_gutzgutz::atlas_build::pack）が assets/character/ から
+# 毎回再生成するアトラス画像+マニフェスト。ソースは assets/character/ 側。
+/assets/generated/
