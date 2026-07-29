@@ -1,15 +1,21 @@
 //! ゲームバランス用の定数。
+//!
+//! ハンドソープ筐体を真横から見たサイドビュー（doc/soap-model.md
+//! 2026-07-29追記：3Dトップダウンから2Dサイドビューへ方針転換）。
+//! X=床に沿った水平位置、Y=高さ（重力方向）で、Zは廃止した。
 
-/// 円形ステージの半径（床の見た目にも使用）。
+/// 床の半幅（見た目にも使用）。中心にプレイヤーのノズルが立ち、
+/// 左右の端から敵が侵入してくる。
 pub const ARENA_RADIUS: f32 = 16.0;
-/// 敵がスポーンする円の半径。
+/// 敵が左右の端からスポーンする、中心からの水平距離。
 pub const ENEMY_SPAWN_RADIUS: f32 = 15.0;
 /// これより中心から離れた泡は掃除（despawn）する。
 pub const BUBBLE_DESPAWN_DISTANCE: f32 = ARENA_RADIUS + 4.0;
-/// 敵がこの距離まで中心に近づいたらプレイヤーにダメージ。
+/// 敵がこの水平距離まで中心に近づいたらプレイヤーにダメージ。
 pub const CENTER_KILL_RADIUS: f32 = 1.1;
 
-/// ノズル（発射口）の高さ・中心からの距離。
+/// ノズル（発射口）の、プレイヤー中心からの距離。狙い方向に応じて
+/// このアンカー点の周りを一周回転する。
 pub const NOZZLE_HEIGHT: f32 = 1.0;
 pub const NOZZLE_RADIUS: f32 = 0.9;
 /// キーボード（A/D）でのノズル回転速度（ラジアン/秒）。
@@ -17,12 +23,11 @@ pub const AIM_ROTATE_SPEED: f32 = 3.0;
 
 /// 押し込み時間（チャージ）の上限秒数。
 pub const CHARGE_MAX_TIME: f32 = 1.4;
-/// チャージ量に応じた水平初速の範囲。
-pub const CHARGE_MIN_SPEED: f32 = 6.0;
-pub const CHARGE_MAX_SPEED: f32 = 16.0;
-/// チャージ量に応じた山なり成分（上向き初速）の範囲。
-pub const CHARGE_MIN_LOB: f32 = 3.0;
-pub const CHARGE_MAX_LOB: f32 = 9.0;
+/// チャージ量に応じた初速（狙った方向への発射速度）の範囲。サイドビューでは
+/// 狙い自体が上下左右を含む2D方向なので、以前のような水平/山なり成分の
+/// 分離は不要——重力が弾道の山なりを自然に作る。
+pub const CHARGE_MIN_SPEED: f32 = 8.0;
+pub const CHARGE_MAX_SPEED: f32 = 18.0;
 /// チャージが浅いほど狙いがブレる最大角度（ラジアン）。「不器用な操作感」用。
 pub const CHARGE_MAX_JITTER: f32 = 0.5;
 

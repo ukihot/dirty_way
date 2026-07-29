@@ -33,8 +33,7 @@ fn main() {
 fn sync_steam_redist() {
     println!("cargo:rerun-if-changed=steam_redist/linux64/libsteam_api.so");
 
-    let redist =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("steam_redist/linux64/libsteam_api.so");
+    let redist = Path::new(env!("CARGO_MANIFEST_DIR")).join("steam_redist/linux64/libsteam_api.so");
     if !redist.exists() {
         return;
     }

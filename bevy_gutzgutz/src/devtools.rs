@@ -9,6 +9,7 @@
 
 mod fps;
 mod god_mode;
+#[cfg(feature = "devtools-physics3d")]
 mod physics_debug;
 mod screenshot;
 mod spawn_entity;
@@ -20,6 +21,7 @@ pub use screenshot::take_screenshot;
 pub use spawn_entity::GutzSpawnRegistry;
 pub use stats::GutzDebugStats;
 
+#[cfg(feature = "devtools-physics3d")]
 use avian3d::debug_render::PhysicsDebugPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -31,6 +33,9 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 pub struct GutzDevtoolsSettings {
     /// オーバーレイ自体の表示/非表示。
     pub toggle_key: KeyCode,
+    /// Avian3D専用（`devtools-physics3d`feature限定）。Avian2Dのゲームでは
+    /// そもそも対応するデバッグ描画システムがコンパイルされないため使われない。
+    #[cfg(feature = "devtools-physics3d")]
     pub physics_debug_key: KeyCode,
     pub god_mode_key: KeyCode,
     pub screenshot_key: KeyCode,
@@ -42,6 +47,7 @@ impl Default for GutzDevtoolsSettings {
     fn default() -> Self {
         Self {
             toggle_key: KeyCode::F3,
+            #[cfg(feature = "devtools-physics3d")]
             physics_debug_key: KeyCode::F2,
             god_mode_key: KeyCode::F4,
             screenshot_key: KeyCode::F12,
@@ -73,23 +79,24 @@ impl Plugin for GutzDevtoolsPlugin {
             .init_resource::<GutzSpawnRegistry>()
             .add_message::<GutzDevtoolsEvent>()
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_plugins(EguiPlugin::default())
-            .add_plugins(PhysicsDebugPlugin)
-            .add_systems(
-                Update,
-                (
-                    toggle_visibility,
-                    fps::update_fps_stats,
-                    physics_debug::toggle_physics_debug,
-                    time_scale::hotkeys,
-                    god_mode::toggle,
-                    screenshot::hotkey,
-                ),
-            )
-            .add_systems(
-                EguiPrimaryContextPass,
-                draw_overlay.run_if(|visible: Res<GutzDevtoolsVisible>| visible.0),
-            );
+            .add_plugins(EguiPlugin::default());
+        #[cfg(feature = "devtools-physics3d")]
+        app.add_plugins(PhysicsDebugPlugin)
+            .add_systems(Update, physics_debug::toggle_physics_debug);
+        app.add_systems(
+            Update,
+            (
+                toggle_visibility,
+                fps::update_fps_stats,
+                time_scale::hotkeys,
+                god_mode::toggle,
+                screenshot::hotkey,
+            ),
+        )
+        .add_systems(
+            EguiPrimaryContextPass,
+            draw_overlay.run_if(|visible: Res<GutzDevtoolsVisible>| visible.0),
+        );
     }
 }
 

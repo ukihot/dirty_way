@@ -1,7 +1,6 @@
-use std::f32::consts::TAU;
 use std::time::Duration;
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::lifecycle::in_game;
 use rand::RngExt;
@@ -120,7 +119,7 @@ fn spawn_enemies(
     mut spawn_timer: ResMut<EnemySpawnTimer>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     spawn_timer.elapsed += time.delta_secs();
     let interval = (ENEMY_SPAWN_INTERVAL_START - spawn_timer.elapsed * DIFFICULTY_RAMP_PER_SEC)
@@ -133,21 +132,18 @@ fn spawn_enemies(
     }
 
     let mut rng = rand::rng();
-    let angle = rng.random_range(0.0..TAU);
+    // サイドビュー：床（Y=0）の左右どちらかの端から出現させる。
+    let side = if rng.random_bool(0.5) { 1.0 } else { -1.0 };
     let kind = EnemyKind::random(&mut rng);
-    let pos = Vec3::new(angle.cos(), 0.0, angle.sin()) * ENEMY_SPAWN_RADIUS;
+    let pos = Vec2::new(side * ENEMY_SPAWN_RADIUS, kind.radius());
 
     commands.spawn((
         Enemy { kind, health: kind.max_health() },
         RigidBody::Kinematic,
-        Collider::sphere(kind.radius()),
-        Mesh3d(meshes.add(Sphere::new(kind.radius()))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: kind.color(),
-            perceptual_roughness: 0.85,
-            ..default()
-        })),
-        Transform::from_translation(pos + Vec3::Y * kind.radius()),
+        Collider::circle(kind.radius()),
+        Mesh2d(meshes.add(Circle::new(kind.radius()))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
+        Transform::from_translation(pos.extend(0.0)),
     ));
 }
 
@@ -168,10 +164,11 @@ fn tick_trapped(
 
 fn move_enemies(mut enemies: Query<(&Enemy, &Transform, &mut LinearVelocity, Option<&Trapped>)>) {
     for (enemy, transform, mut velocity, trapped) in &mut enemies {
-        let to_center = -Vec3::new(transform.translation.x, 0.0, transform.translation.z);
-        let dir = to_center.normalize_or_zero();
+        // 床（Y=0）に沿って中心(X=0)へ向かうだけの水平移動。KinematicBodyは
+        // 重力の影響を受けないので、Yは常に着地時の高さのまま変わらない。
+        let dir = -transform.translation.x.signum();
         let speed_multiplier = if trapped.is_some() { TRAPPED_SPEED_MULTIPLIER } else { 1.0 };
-        velocity.0 = dir * enemy.kind.speed() * speed_multiplier;
+        velocity.0 = Vec2::new(dir * enemy.kind.speed() * speed_multiplier, 0.0);
     }
 }
 
@@ -182,7 +179,7 @@ fn enemy_reach_center(
     enemies: Query<(Entity, &Enemy, &Transform)>,
 ) {
     for (entity, enemy, transform) in &enemies {
-        let dist = Vec2::new(transform.translation.x, transform.translation.z).length();
+        let dist = transform.translation.x.abs();
         if dist <= CENTER_KILL_RADIUS {
             // bubble.rs 側の撃破処理と同一フレームで競合しうるため try_despawn にする。
             commands.entity(entity).try_despawn();

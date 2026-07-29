@@ -32,8 +32,8 @@ bevy = { version = "0.19.0", default-features = false, features = [
     "wayland",
     "custom_cursor",
     "sysinfo_plugin",
-    # 3D 描画
-    "3d_bevy_render",
+    # 2D 描画
+    "2d_bevy_render",
     "scene",
     # UI（HUD表示用）
     "ui_api",
@@ -42,7 +42,7 @@ bevy = { version = "0.19.0", default-features = false, features = [
     "bevy_audio",
     "vorbis",
 ] }
-avian3d = "0.7.0"      # 3D物理演算（旧 bevy_xpbd）
+avian2d = "0.7.0"      # 2D物理演算（旧 bevy_xpbd）
 rand = "0.10"            # 敵の出現角度・種類やブレの乱数
 # SaveData（state.rs）のシリアライズに使う。bevy_gutzgutzのsave/input
 # featureはserdeを内部で使うが、dirty_way自身の`#[derive(Serialize,

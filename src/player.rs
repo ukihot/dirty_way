@@ -14,15 +14,17 @@ use crate::state::GameState;
 #[derive(Component)]
 pub struct SoapDispenser;
 
-/// ノズルの向き（Y軸回りの角度）。角度 0 は +Z 方向。
+/// ノズルの向き（Z軸回りの角度、画面内でのXY回転）。角度 0 は +X 方向。
+/// サイドビューでは狙い方向そのものが上下左右を含む2D方向になるので、
+/// 以前のような「水平角度＋別軸の山なり」という分離は不要（consts.rs参照）。
 #[derive(Resource, Default)]
 pub struct Aim {
     pub angle: f32,
 }
 
 impl Aim {
-    pub fn direction(&self) -> Vec3 {
-        Vec3::new(self.angle.sin(), 0.0, self.angle.cos())
+    pub fn direction(&self) -> Vec2 {
+        Vec2::new(self.angle.cos(), self.angle.sin())
     }
 }
 
@@ -59,16 +61,13 @@ impl Plugin for PlayerPlugin {
 fn spawn_player(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     commands.spawn((
         SoapDispenser,
-        Mesh3d(meshes.add(Capsule3d::new(0.45, 1.1))),
-        MeshMaterial3d(
-            materials
-                .add(StandardMaterial { base_color: Color::srgb(0.95, 0.55, 0.75), ..default() }),
-        ),
-        Transform::from_xyz(0.0, 0.75, 0.0),
+        Mesh2d(meshes.add(Capsule2d::new(0.45, 1.1))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.95, 0.55, 0.75)))),
+        Transform::from_xyz(0.0, NOZZLE_HEIGHT, 0.0),
     ));
 }
 
@@ -86,7 +85,7 @@ fn update_aim(time: Res<Time>, actions: Res<GutzActionState<PlayerAction>>, mut 
 
 fn rotate_player_visual(aim: Res<Aim>, mut query: Query<&mut Transform, With<SoapDispenser>>) {
     if let Ok(mut transform) = query.single_mut() {
-        transform.rotation = Quat::from_rotation_y(aim.angle);
+        transform.rotation = Quat::from_rotation_z(aim.angle);
     }
 }
 
@@ -127,25 +126,26 @@ fn fire_bubble(
     commands: &mut Commands,
     foam_allocator: &mut FoamSlotAllocator,
     foam_quality_profile: FoamQualityProfile,
-    aim_dir: Vec3,
+    aim_dir: Vec2,
     fraction: f32,
 ) {
-    let base_dir = if aim_dir.length_squared() > 0.0001 { aim_dir.normalize() } else { Vec3::Z };
+    let base_dir = if aim_dir.length_squared() > 0.0001 { aim_dir.normalize() } else { Vec2::X };
 
     // 不器用な操作感：溜めが浅いほど狙いがブレる。
     let jitter = (1.0 - fraction) * CHARGE_MAX_JITTER;
     let jitter_angle = rand::rng().random_range(-jitter..=jitter);
-    let dir = Quat::from_rotation_y(jitter_angle) * base_dir;
+    let dir = base_dir.rotate(Vec2::from_angle(jitter_angle));
 
-    let horizontal_speed = CHARGE_MIN_SPEED + (CHARGE_MAX_SPEED - CHARGE_MIN_SPEED) * fraction;
-    let lob_speed = CHARGE_MIN_LOB + (CHARGE_MAX_LOB - CHARGE_MIN_LOB) * fraction;
-    let velocity = dir * horizontal_speed + Vec3::Y * lob_speed;
+    // サイドビューでは狙い方向自体が上下左右を含むので、山なり軌道は
+    // 重力（main.rsのGravity）が自然に作る。チャージは初速の大きさだけを決める。
+    let speed = CHARGE_MIN_SPEED + (CHARGE_MAX_SPEED - CHARGE_MIN_SPEED) * fraction;
+    let velocity = dir * speed;
 
-    let spawn_pos = dir * NOZZLE_RADIUS + Vec3::Y * NOZZLE_HEIGHT;
+    let spawn_pos = dir * NOZZLE_RADIUS + Vec2::new(0.0, NOZZLE_HEIGHT);
     let radius = BUBBLE_MIN_RADIUS + (BUBBLE_MAX_RADIUS - BUBBLE_MIN_RADIUS) * fraction;
     let power = 1 + (fraction * 2.0).floor() as i32;
 
-    // Avian3Dの当たり判定を持つBubbleを発射する。見た目（soap.rs）はこの
+    // Avian2Dの当たり判定を持つBubbleを発射する。見た目（soap.rs）はこの
     // Bubbleエンティティの位置・速度を毎フレーム自動で観測するので、ここから
     // 別途何かを送信する必要はない（doc/soap-model.md 第28節）。
     spawn_bubble(

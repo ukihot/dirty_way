@@ -1,6 +1,6 @@
 use std::f32::consts::TAU;
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::lifecycle::in_game;
 use rand::RngExt;
@@ -40,13 +40,12 @@ pub struct Bubble {
 #[derive(Component, Clone, Copy)]
 pub struct FoamGpuBinding {
     pub slots: [u32; FOAM_SUB_INSTANCES],
-    /// 各スロットの、Bubble中心からの相対オフセット（半径1.
-    /// 0基準の単位ベクトル。 XZ平面内、Y=0）。`soap.rs`側で実際の`bubble.
-    /// radius`を掛けて使う。
+    /// 各スロットの、Bubble中心からの相対オフセット（半径1.0基準の単位
+    /// ベクトル）。`soap.rs`側で実際の`bubble.radius`を掛けて使う。
     /// 複数の塊を少しずつずらして重ねて配置することで、単一Instanceでは
     /// 出せない「寄り集まって融合した液体」の見た目を作る（consts::
     /// FOAM_SUB_INSTANCES参照）。
-    pub offsets: [Vec3; FOAM_SUB_INSTANCES],
+    pub offsets: [Vec2; FOAM_SUB_INSTANCES],
     pub generation: u32,
 }
 
@@ -81,13 +80,13 @@ impl Default for FoamSlotAllocator {
 /// 配置する（1個は中心、残りは円状に並べる）。乱数で回転させることで、
 /// 発射のたびにクラスターの向きが変わり、毎回同じ形に見えるのを避ける
 /// （doc/soap-issues.md S-01/S-02と同じ「毎回同じ形問題」への対策）。
-fn cluster_offsets() -> [Vec3; FOAM_SUB_INSTANCES] {
-    let mut offsets = [Vec3::ZERO; FOAM_SUB_INSTANCES];
+fn cluster_offsets() -> [Vec2; FOAM_SUB_INSTANCES] {
+    let mut offsets = [Vec2::ZERO; FOAM_SUB_INSTANCES];
     let rotation = rand::rng().random_range(0.0..TAU);
     let ring_count = FOAM_SUB_INSTANCES - 1;
     for (i, offset) in offsets.iter_mut().skip(1).enumerate() {
         let angle = rotation + i as f32 / ring_count as f32 * TAU;
-        *offset = Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.45;
+        *offset = Vec2::new(angle.cos(), angle.sin()) * 0.45;
     }
     offsets
 }
@@ -127,11 +126,7 @@ impl Plugin for BubblePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FoamSlotAllocator>().add_systems(
             Update,
-            (
-                tick_bubble_lifetime,
-                despawn_out_of_bounds,
-                bubble_enemy_interaction,
-            )
+            (tick_bubble_lifetime, despawn_out_of_bounds, bubble_enemy_interaction)
                 .run_if(in_game::<GameState>()),
         );
     }
@@ -141,15 +136,15 @@ pub fn spawn_bubble(
     commands: &mut Commands,
     allocator: &mut FoamSlotAllocator,
     quality: FoamQualityProfile,
-    position: Vec3,
-    velocity: Vec3,
+    position: Vec2,
+    velocity: Vec2,
     radius: f32,
     power: i32,
 ) {
     let mut entity = commands.spawn((
         Bubble { power, life: 0.0, radius, hit_enemies: Vec::new() },
         RigidBody::Dynamic,
-        Collider::sphere(radius),
+        Collider::circle(radius),
         // 泡の見た目（soap.rs）は「跳ねるボール」ではなく「着地して潰れる
         // 泡の塊」として描画したい。Restitution=0.12/Friction=0.05という
         // 旧設定は、実際に動かすと「ごつんと弾んで転がる硬いボール」に感じ
@@ -171,7 +166,7 @@ pub fn spawn_bubble(
         // ので、副作用はない。
         LockedAxes::ROTATION_LOCKED,
         LinearVelocity(velocity),
-        Transform::from_translation(position),
+        Transform::from_translation(position.extend(0.0)),
     ));
     // 品質上限に達している、またはプールが尽きていたら見た目（FoamGpuBinding）
     // だけ諦める。ゲームロジックには影響しない。

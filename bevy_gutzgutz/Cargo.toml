@@ -8,7 +8,13 @@ edition = "2024"
 # 落とせるようにする。
 [features]
 default = []
-devtools = ["dep:bevy_egui", "dep:avian3d", "bevy/bevy_render", "bevy/bevy_window"]
+devtools = ["dep:bevy_egui", "bevy/bevy_render", "bevy/bevy_window"]
+# devtoolsのうち、Avian3D専用のPhysics Debug（BVH/軸/Raycast/接触点の
+# gizmo描画）だけを切り出したサブfeature。Avian2Dのゲームなど、そもそも
+# avian3dを使わない消費側がdevtoolsを有効化すると、Avian3D側のリソースが
+# 存在せずデバッグ描画システムが即パニックする（Res<T>のパラメータ検証で
+# 落ちる）ため、avian3dへの依存はここでのみ opt-in にする。
+devtools-physics3d = ["devtools", "dep:avian3d"]
 interaction = ["dep:avian3d", "bevy/bevy_camera", "bevy/bevy_window"]
 # GutzLifeCyclePlugin。State Debugger（devtoolsへの自動統合）はdevtools
 # feature併用時のみコンパイルされるが、lifecycle自体はdevtools非依存。
@@ -51,8 +57,8 @@ atlas-build = ["dep:image", "dep:serde", "dep:toml", "dep:thiserror"]
 # bevy`（`reflect_auto_register`込み）と同じ依存グラフ内でしか使われて
 # こなかったため、これまで気づかなかった）。
 bevy = { version = "0.19.0", default-features = false, features = ["reflect_auto_register"] }
-# devtools（Physics Debugトグル）とinteraction（raycast/grab/explosion/impulse）
-# の両方から使う共有依存。dirty_wayと同じ0.7.0系。
+# devtools-physics3d（Physics Debugトグル）とinteraction（raycast/grab/
+# explosion/impulse）の両方から使う共有依存。dirty_wayと同じ0.7.0系。
 avian3d = { version = "0.7.0", optional = true }
 bevy_egui = { version = "0.41.1", optional = true }
 # input（TOMLバインディング設定）とsave（TOMLセーブデータ）が共有する依存。

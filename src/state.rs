@@ -131,8 +131,9 @@ fn restart_input(
     actions: Res<GutzActionState<PlayerAction>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    // RestartはOutGame専用（input.toml + actions.rs）なので、TitleからでもGameOverからでも
-    // 同じ「プレイを始める／やり直す」に使い回せる（どちらもOnEnter(Playing)のreset_gameで
+    // RestartはOutGame専用（input.toml +
+    // actions.rs）なので、TitleからでもGameOverからでも 同じ「プレイを始める／
+    // やり直す」に使い回せる（どちらもOnEnter(Playing)のreset_gameで
     // まっさらな状態になる）。
     if actions.just_pressed(PlayerAction::Restart) {
         next_state.set(GameState::Playing);

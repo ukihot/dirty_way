@@ -9,7 +9,7 @@ mod soap;
 mod state;
 mod ui;
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::atlas::GutzAtlasPlugin;
 use bevy_gutzgutz::devtools::GutzDevtoolsPlugin;
@@ -30,7 +30,7 @@ fn main() {
         .add_plugins(GutzDevtoolsPlugin)
         .add_plugins(PhysicsPlugins::default())
         // 小さめのアリーナに合わせて重力を強めにし、泡の山なり弾道を短めにする。
-        .insert_resource(Gravity(Vec3::NEG_Y * 14.0))
+        .insert_resource(Gravity(Vec2::NEG_Y * 14.0))
         .add_systems(Startup, actions::setup_input_bindings)
         .add_plugins((
             state::GameStatePlugin,

@@ -1,15 +1,15 @@
 //! リアルタイム・ハンドソープ表現（doc/soap-model.md、特に第27〜28,31節）。
 //!
 //! `bubble.rs`
-//! はゲームロジック（Avian3Dによる当たり判定・ダメージ・足止め）に加えて、
+//! はゲームロジック（Avian2Dによる当たり判定・ダメージ・足止め）に加えて、
 //! GPU側スロットの割当（`FoamSlotAllocator`）と「どのBubbleがどのスロットか」という
 //! 対応（`FoamGpuBinding`コンポーネント）も持つ。
 //! この`FoamGpuBinding`が付いている Bubbleエンティティを毎フレーム観測し、
 //! GPU常駐のFoam Instance Poolを
 //! コンピュートシェーダーで「着弾扁平化→広がり」というレオロジー（見た目の変形）
-//! だけ更新し、Metaballレイマーチで「ぬちゃっと広がる泡」として描画するのがこのファイル。
+//! だけ更新し、2Dメタボール直接評価で「ぬちゃっと広がる泡」として描画するのがこのファイル。
 //!
-//! 重力・地面接触の物理そのものはAvian3D（`bubble.rs`）が一元的に解く。
+//! 重力・地面接触の物理そのものはAvian2D（`bubble.rs`）が一元的に解く。
 //! 以前はここで 重力を独自に積分しており、`main.
 //! rs`のGravityリソースと無関係な別の重力定数を 抱えてしまっていた（doc/
 //! soap-issues.md S-09）。CPUは毎フレーム全粒子を転送しない （doc第2.1〜2.
@@ -20,11 +20,16 @@
 //! GPU側の1スロットは「泡粒子」ではなく「1個のFoam Aggregateの見た目の状態」を
 //! 保持するので、`GpuParticle`/
 //! `Particle`ではなく`FoamInstance`と呼ぶ（doc第31節）。
+//!
+//! 2026-07-29追記：3Dトップダウンから2Dサイドビューへ方針転換
+//! （Transparent3d→Transparent2d、レイマーチ→ピクセルごとの直接評価。
+//! 詳細はsoap_render.wgsl冒頭のコメント参照）。
 
-use avian3d::prelude::*;
-use bevy::core_pipeline::core_3d::{CORE_3D_DEPTH_FORMAT, Transparent3d, TransparentSortingInfo3d};
+use avian2d::prelude::*;
+use bevy::core_pipeline::core_2d::{CORE_2D_DEPTH_FORMAT, Transparent2d};
 use bevy::ecs::system::SystemParamItem;
 use bevy::ecs::system::lifetimeless::SRes;
+use bevy::math::FloatOrd;
 use bevy::prelude::*;
 use bevy::render::render_phase::{
     AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
@@ -94,7 +99,7 @@ impl Plugin for SoapPlugin {
                 ),
             )
             .add_systems(RenderGraph, simulate_foam_instances.in_set(RenderGraphSystems::Begin))
-            .add_render_command::<Transparent3d, DrawSoapMetaballs>();
+            .add_render_command::<Transparent2d, DrawSoapMetaballs>();
     }
 }
 
@@ -112,9 +117,9 @@ struct SoapShaderHandles {
 /// Foam Aggregateの見た目の変形状態」を表す（doc第31節）。
 #[derive(Clone, Copy, ShaderType, Default)]
 struct FoamInstance {
-    position: Vec3,
-    velocity: Vec3,
-    scale: Vec3,
+    position: Vec2,
+    velocity: Vec2,
+    scale: Vec2,
     state: u32,
     lifetime: f32,
     base_radius: f32,
@@ -127,8 +132,8 @@ struct FoamInstance {
 #[derive(Clone, Copy, ShaderType)]
 struct GpuDriveEntry {
     target_slot: u32,
-    position: Vec3,
-    velocity: Vec3,
+    position: Vec2,
+    velocity: Vec2,
     base_radius: f32,
     generation: u32,
 }
@@ -136,7 +141,7 @@ struct GpuDriveEntry {
 #[derive(Clone, Copy, ShaderType, Default)]
 struct SimParams {
     dt: f32,
-    table_height: f32,
+    floor_height: f32,
     impact_factor: f32,
     max_spread: f32,
     drive_count: u32,
@@ -144,11 +149,10 @@ struct SimParams {
 
 #[derive(Clone, Copy, ShaderType, Default)]
 struct SoapViewUniform {
-    clip_from_world: Mat4,
+    /// クリップ空間NDC→ワールドXYへの逆変換。2Dの正投影ビューではZに依存
+    /// しないアフィン変換になるため、レイではなく1点の変換で十分
+    /// （soap_render.wgsl参照）。
     world_from_clip: Mat4,
-    camera_world_position: Vec3,
-    /// Foam Quality（doc/soap-issues.md S-11a）に応じたレイマーチのステップ数。
-    raymarch_steps: u32,
     /// MicrostructureQuality::as_u32()
     /// のエンコードと対応（soap_render.wgsl参照）。
     microstructure_quality: u32,
@@ -165,8 +169,8 @@ struct SoapViewUniform {
 struct ExtractedAggregate {
     slot: u32,
     generation: u32,
-    position: Vec3,
-    velocity: Vec3,
+    position: Vec2,
+    velocity: Vec2,
     radius: f32,
 }
 
@@ -188,7 +192,7 @@ fn extract_foam_aggregates(
             extracted.0.push(ExtractedAggregate {
                 slot: binding.slots[i],
                 generation: binding.generation,
-                position: transform.translation + binding.offsets[i] * bubble.radius,
+                position: transform.translation.xy() + binding.offsets[i] * bubble.radius,
                 velocity: velocity.0,
                 radius: bubble.radius * FOAM_SUB_INSTANCE_RADIUS_SCALE,
             });
@@ -322,10 +326,8 @@ fn prepare_soap_view_uniform(
     mut buffer: ResMut<SoapViewUniformBuffer>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    // With<ViewTarget>: シーンにはシャドウマップ用の DirectionalLight があり、
-    // それぞれ追加の ExtractedView（影用カメラ）を持つ。フィルタなしで
-    // Query<&ExtractedView> の先頭を拾うと、メインカメラではなくシャドウの
-    // Viewを掴んでしまい、レイの原点・方向が完全に破綻する（第23節の
+    // With<ViewTarget>: フィルタなしで Query<&ExtractedView> の先頭を拾うと、
+    // メインカメラ以外の補助Viewを掴んでしまう可能性がある（第23節の
     // 「Phase 1: カメラ1台固定」はViewTargetを持つ実際の描画カメラに限定する）。
     views: Query<&ExtractedView, With<ViewTarget>>,
     quality: Res<ExtractedFoamQuality>,
@@ -338,10 +340,7 @@ fn prepare_soap_view_uniform(
             .clip_from_world
             .unwrap_or_else(|| view.clip_from_view * view.world_from_view.to_matrix().inverse());
         buffer.0.set(SoapViewUniform {
-            clip_from_world,
             world_from_clip: clip_from_world.inverse(),
-            camera_world_position: view.world_from_view.translation(),
-            raymarch_steps: profile.raymarch_steps,
             microstructure_quality: profile.microstructure_quality.as_u32(),
             active_count: extracted.0.len() as u32,
         });
@@ -379,8 +378,8 @@ fn prepare_foam_drive_queue(
         // shader側では何にもマッチしない）。
         drive_queue.0.get_mut().push(GpuDriveEntry {
             target_slot: u32::MAX,
-            position: Vec3::ZERO,
-            velocity: Vec3::ZERO,
+            position: Vec2::ZERO,
+            velocity: Vec2::ZERO,
             base_radius: 0.0,
             generation: 0,
         });
@@ -397,7 +396,7 @@ fn prepare_foam_drive_queue(
 
     sim_params.0.set(SimParams {
         dt: time.delta_secs(),
-        table_height: 0.0,
+        floor_height: 0.0,
         // 課題S-15：0.12だと着弾速度(概ね6〜10)に対してspread=1.7〜2.2程度
         // にしかならず、遠くから見ると「ちょっと潰れた球」にしか見えず
         // 扁平化が伝わらなかった。もっとはっきり潰れて見えるよう強める。
@@ -495,19 +494,19 @@ fn simulate_foam_instances(
 }
 
 // ---------------------------------------------------------------------------
-// Metaball描画パス（doc第24節：Transparent3dフェーズへの参加）。
+// Metaball描画パス（doc第24節：Transparent2dフェーズへの参加）。
 // ---------------------------------------------------------------------------
 
 fn queue_soap_metaballs(
-    draw_functions: Res<DrawFunctions<Transparent3d>>,
+    draw_functions: Res<DrawFunctions<Transparent2d>>,
     pipeline_cache: Res<PipelineCache>,
     mut gpu: ResMut<SoapGpuResources>,
-    mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
+    mut phases: ResMut<ViewSortedRenderPhases<Transparent2d>>,
     views: Query<(Entity, &ExtractedView, &ViewTarget)>,
     extracted: Res<ExtractedFoamAggregates>,
 ) {
     // 課題S-05：今生きているFoam Aggregateが1つも無ければ、画面全体に対する
-    // レイマーチ自体を丸ごとスキップする。
+    // 密度評価自体を丸ごとスキップする。
     if extracted.0.is_empty() {
         return;
     }
@@ -537,14 +536,14 @@ fn queue_soap_metaballs(
                     })],
                 }),
                 primitive: PrimitiveState::default(),
-                // Transparent3dのレンダーパスはDepth32Floatの深度アタッチメントを
+                // Transparent2dのレンダーパスもDepth32Floatの深度アタッチメントを
                 // 持っており、パイプライン側もフォーマットを合わせないと
                 // "Incompatible depth-stencil attachment format" で即クラッシュする
                 // （depth_stencil: None は不可）。フォーマットは合わせつつ、
                 // Always/書き込みなしにして実質的に深度テストを無効化する
                 // （詳細はshader冒頭のコメント）。
                 depth_stencil: Some(DepthStencilState {
-                    format: CORE_3D_DEPTH_FORMAT,
+                    format: CORE_2D_DEPTH_FORMAT,
                     depth_write_enabled: Some(false),
                     depth_compare: Some(CompareFunction::Always),
                     stencil: StencilState::default(),
@@ -563,13 +562,15 @@ fn queue_soap_metaballs(
 
     for (view_entity, view, _) in &views {
         let Some(phase) = phases.get_mut(&view.retained_view_entity) else { continue };
-        phase.add_transient(Transparent3d {
-            sorting_info: TransparentSortingInfo3d::AlwaysOnTop,
-            distance: 0.0,
+        // sort_keyを最大値にして、他の全2D描画（床・キャラクター等）より
+        // 常に後＝手前に描く（旧TransparentSortingInfo3d::AlwaysOnTopと同じ意図）。
+        phase.add_transient(Transparent2d {
+            sort_key: FloatOrd(f32::MAX),
             pipeline: render_pipeline,
             entity: (view_entity, MainEntity::from(view_entity)),
             draw_function,
             batch_range: 0..1,
+            extracted_index: 0,
             extra_index: PhaseItemExtraIndex::None,
             indexed: false,
         });

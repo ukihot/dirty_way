@@ -9,6 +9,10 @@
 //! 今はキー入力（1/2/3）で切り替えられる暫定UIだけを用意する。将来の設定画面・
 //! Auto Dynamic Quality（S-11b）は、このResourceを外側から書き換えるだけで
 //! 乗せられる構造にしてある。
+//!
+//! 2Dサイドビューへの方針転換（2026-07-29）で描画がレイマーチから
+//! 「ピクセルごとに1回、密度場を直接評価する」方式になったため、
+//! レイマーチのステップ数という概念自体が無くなった（soap_render.wgsl参照）。
 
 use bevy::prelude::*;
 
@@ -18,9 +22,6 @@ pub enum FoamQuality {
     #[default]
     Medium,
     High,
-    /// レイマーチが「bounding sphereの粗判定＋早期終了＋適応ステップ」で
-    /// ブルートフォースでなくなったため、High以上のステップ数・Aggregate数を
-    /// 現実的なコストで狙えるようになった段階（soap_render.wgsl参照）。
     Cinematic,
 }
 
@@ -29,22 +30,18 @@ impl FoamQuality {
         match self {
             FoamQuality::Low => FoamQualityProfile {
                 max_aggregates: 16,
-                raymarch_steps: 32,
                 microstructure_quality: MicrostructureQuality::Simple,
             },
             FoamQuality::Medium => FoamQualityProfile {
                 max_aggregates: 64,
-                raymarch_steps: 64,
                 microstructure_quality: MicrostructureQuality::Normal,
             },
             FoamQuality::High => FoamQualityProfile {
                 max_aggregates: 256,
-                raymarch_steps: 96,
                 microstructure_quality: MicrostructureQuality::Detailed,
             },
             FoamQuality::Cinematic => FoamQualityProfile {
                 max_aggregates: 512,
-                raymarch_steps: 160,
                 microstructure_quality: MicrostructureQuality::Detailed,
             },
         }
@@ -88,7 +85,6 @@ pub struct FoamQualityProfile {
     /// 物理容量（512）とは独立で、これを超えたBubbleは見た目だけ諦める
     /// （ゲームロジックには影響しない）。
     pub max_aggregates: u32,
-    pub raymarch_steps: u32,
     pub microstructure_quality: MicrostructureQuality,
 }
 
