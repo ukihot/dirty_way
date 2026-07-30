@@ -51,7 +51,6 @@ struct SimParams {
     dt: f32,
     floor_height: f32,
     impact_factor: f32,
-    max_spread: f32,
     drive_count: u32,
 };
 
@@ -60,13 +59,6 @@ const STATE_FLYING: u32 = 1u;
 const STATE_IMPACT: u32 = 2u;
 const STATE_SPREADING: u32 = 3u;
 const STATE_RESTING: u32 = 4u;
-
-// 既存ゲームプレイの泡の寿命（BUBBLE_LIFETIME）と揃え、同じ起点（スポーン時刻）で
-// カウントする。Avianの泡エンティティがdespawnするのとほぼ同時にGPU側も
-// 非アクティブになる（doc第28.2節）。
-// 課題S-08のフェード演出はsoap_render.wgsl側で行う（このファイルではなく）。
-// 値を変える場合は soap_render.wgsl の同名定数も揃えて変更すること。
-const MAX_LIFETIME: f32 = 6.0;
 
 @group(0) @binding(0) var<storage, read_write> foam_instances: array<FoamInstance>;
 @group(0) @binding(1) var<storage, read> drive_entries: array<DriveEntry>;
@@ -108,12 +100,11 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    // 実機フィードバック（2026-07-30）：泡は時間経過で自然に消える必要は
+    // ない。以前はここでlifetimeがMAX_LIFETIMEを超えたらSTATE_INACTIVEへ
+    // 強制遷移させていたが撤去した（doc/soap-issues.md S-35）。lifetimeは
+    // 今後使う可能性に備えて加算だけ残す。
     inst.lifetime = inst.lifetime + sim_params.dt;
-    if (inst.lifetime > MAX_LIFETIME) {
-        inst.state = STATE_INACTIVE;
-        foam_instances[index] = inst;
-        return;
-    }
 
     if (inst.state == STATE_FLYING) {
         // 課題S-24：着地したかどうかはMain World側（Avian2Dの衝突判定、
@@ -150,13 +141,19 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
         inst.state = STATE_SPREADING;
     } else if (inst.state == STATE_SPREADING) {
         // 位置・速度の減衰はAvian側（Restitution/Friction/LinearDamping、
-        // bubble.rs）が既に解いている。ここではscale（見た目の広がり）の
-        // 補間だけを行う（第9節）。
-        let current_spread = inst.scale.x / inst.base_radius;
-        let target_spread = min(current_spread + 0.5 * sim_params.dt, sim_params.max_spread);
-        let target_scale = vec2<f32>(target_spread, 1.0 / target_spread) * inst.base_radius;
-        inst.scale = mix(inst.scale, target_scale, sim_params.dt * 4.0);
-
+        // bubble.rs）が既に解いている。scale（見た目の扁平化）はIMPACT
+        // 遷移の瞬間に着弾速度から一度だけ確定済み（第8節）。
+        //
+        // 課題S-36（2026-07-30、実機フィードバック）：以前はここで
+        // target_spreadを毎フレーム0.5/秒で`max_spread`まで際限なく
+        // 成長させ続けていた。泡だまりの奥のInstanceはAvian側の接触
+        // ジッタ（他のBubbleに支えられ続けることで生じる微小な速度）で
+        // 下のvelocity閾値判定が安定せずSTATE_RESTINGへなかなか遷移
+        // できないため、SPREADINGに留まる時間が長引くほど山全体が際限
+        // なく扁平になっていく不自然な見た目になっていた。IMPACTで
+        // 確定したscaleをそのまま保持し、速度が閾値を下回った最初の
+        // タイミングでRESTINGへ遷移するだけにする（追加の一方向的な
+        // 成長はしない）。
         if (length(inst.velocity) < 0.05) {
             inst.state = STATE_RESTING;
         }

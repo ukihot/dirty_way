@@ -157,7 +157,6 @@ struct SimParams {
     dt: f32,
     floor_height: f32,
     impact_factor: f32,
-    max_spread: f32,
     drive_count: u32,
 }
 
@@ -429,9 +428,6 @@ fn prepare_foam_drive_queue(
         // にしかならず、遠くから見ると「ちょっと潰れた球」にしか見えず
         // 扁平化が伝わらなかった。もっとはっきり潰れて見えるよう強める。
         impact_factor: 0.28,
-        // 課題S-01：自然な到達範囲より十分高くして、着弾速度差がそのまま
-        // 最終形状差として残るようにする。
-        max_spread: 3.4,
         drive_count,
     });
     sim_params.0.write_buffer(&render_device, &render_queue);

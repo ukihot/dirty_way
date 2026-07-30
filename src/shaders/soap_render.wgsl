@@ -41,13 +41,6 @@ const MICROSTRUCTURE_SIMPLE: u32 = 0u;
 const MICROSTRUCTURE_NORMAL: u32 = 1u;
 const MICROSTRUCTURE_DETAILED: u32 = 2u;
 
-// soap_compute.wgsl の MAX_LIFETIME と同じ値に保つこと。課題S-08：寿命の
-// 終わり際に密度を薄めてフェードアウトさせる（scaleをcompute側で毎フレーム
-// 縮めると乗算が重なって指数的に潰れてしまうため、render側でlifetimeから
-// 都度計算する）。
-const MAX_LIFETIME: f32 = 6.0;
-const FADE_DURATION: f32 = 1.0;
-
 // 課題S-13：`instance_density`のbase(=max(0,1-d))はInstance中心(d=0)で
 // ちょうど1.0に達し、表面(d=1)で0まで落ちる形をしている。旧アーキテクチャ
 // （1発=10〜30個の重なり合う粒子）は、複数Instanceの合算でこの閾値を
@@ -119,6 +112,60 @@ fn value_noise2(p: vec2<f32>) -> f32 {
     return mix(x0, x1, u.y);
 }
 
+// 2026-07-30追記：泡のミクロ構造（doc/soap-model.md 第27.2節「FoamField =
+// LiquidFilmField − BubbleVoidField」の簡略実装）。これまでのvalue_noise2は
+// 滑らかにうねる表面ノイズで、Detailed品質でしか有効になっていなかった
+// （デフォルトのMedium品質＝MICROSTRUCTURE_NORMALでは表面が完全な滑らかな
+// 楕円のままだった）。これだと艶々の「ジェル玉」には見えても、無数の微細
+// 気泡が集まった「ハンドソープの泡」には見えない、という指摘（実機確認）を
+// 受けて、粒状の凹凸（無数の小さな泡の粒）を作るWorley風セルノイズを追加する。
+//
+// `nearest_bubble`が返すのは「最も近い泡粒の中心までの距離（セルサイズ基準に
+// 正規化）」と「その粒固有の乱数」。`bubble_microstructure`はこれを、粒の
+// 中心付近で盛り上がり・粒と粒の境界（薄膜）付近で凹む山形カーブに変換する。
+// この値をinstance_densityへ小さい振幅で加算するだけで、scene_densityの
+// 勾配（=法線）に無数の細かい凹凸が乗り、シェーディングに無数のハイライトが
+// 散らばる「泡立った」質感になる（幾何形状そのものは変えないのでシルエットは
+// ほぼ保たれる）。
+const BUBBLE_CELL_SIZE: f32 = 0.16;
+
+fn bubble_hash2(p: vec2<f32>) -> vec2<f32> {
+    let x = hash21(p);
+    let y = hash21(p + vec2<f32>(19.19, 7.7));
+    return vec2<f32>(x, y);
+}
+
+// pに最も近い泡粒の中心までの距離（Worley F1、セルサイズ基準に正規化）と、
+// その粒固有の乱数（x成分。大きさのばらつきに使う）を返す。
+fn nearest_bubble(p: vec2<f32>) -> vec2<f32> {
+    let cell = floor(p / BUBBLE_CELL_SIZE);
+    var best_dist = 10.0;
+    var best_rand = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let neighbor = cell + vec2<f32>(f32(x), f32(y));
+            let jitter = bubble_hash2(neighbor);
+            let center = (neighbor + 0.15 + jitter * 0.7) * BUBBLE_CELL_SIZE;
+            let d = distance(p, center) / BUBBLE_CELL_SIZE;
+            if (d < best_dist) {
+                best_dist = d;
+                best_rand = jitter.x;
+            }
+        }
+    }
+    return vec2<f32>(best_dist, best_rand);
+}
+
+// 粒の中心(dist=0)で+1、粒の半径(dist=size)で0、それより外で-1に近づく
+// 山形カーブ。粒ごとに`size`をばらつかせ、大きさの不揃いな気泡の集まりに見せる。
+fn bubble_microstructure(p: vec2<f32>) -> f32 {
+    let b = nearest_bubble(p);
+    let dist = b.x;
+    let size = 0.35 + b.y * 0.4;
+    let bump = (size - dist) / size;
+    return clamp(bump, -1.0, 1.0);
+}
+
 // 課題S-20（2026-07-29）：1つのBubbleの中の5個の塊同士は重なるように
 // 配置しているので融合して見えるが、「別々に着地したBubble」同士は
 // 物理的にぴったり重ならない限りそれぞれの半径でスパッと密度が0になり、
@@ -181,19 +228,28 @@ fn instance_density(p: vec2<f32>, inst: FoamInstance) -> f32 {
     // 掛けており、これが石のようなまだらな質感の主因になっていた（実機確認）。
     // ソープの泡らしい滑らかさを優先し、ノイズはDetailedのみ・振幅も大幅に
     // 弱めた「表面の微妙な揺らぎ」程度に留める。
+    //
+    // S-33（2026-07-30）：上のS-16対応だけだと、デフォルト品質（Medium＝
+    // MICROSTRUCTURE_NORMAL）では表面ノイズが一切乗らず、完全に滑らかな
+    // 楕円のまま＝艶々の「ジェル玉」にしか見えなかった。無数の微細気泡の
+    // 集合という「泡」らしさを出すため、Worley風の粒状凹凸
+    // （`bubble_microstructure`）をNormal以上に適用する。
     var noisy = base;
+    if (view.microstructure_quality != MICROSTRUCTURE_SIMPLE) {
+        let bubbles = bubble_microstructure(p * 1.0 + inst.position * 0.01);
+        noisy = max(0.0, base + bubbles * 0.07 * base);
+    }
     if (view.microstructure_quality == MICROSTRUCTURE_DETAILED) {
         let n1 = value_noise2(p * 4.0 + inst.position * 5.0) - 0.5;
         let n2 = value_noise2(p * 9.0 + inst.position * 3.0) - 0.5;
         let n = n1 * 0.7 + n2 * 0.3;
-        noisy = max(0.0, base + n * 0.08 * base);
+        noisy = max(0.0, noisy + n * 0.08 * base);
     }
 
-    // 課題S-08：寿命の最後のFADE_DURATION秒で密度を1.0→0.0へ薄める。
-    // DENSITY_THRESHOLDに届かなくなり、外側から縮むように自然に消える。
-    let fade_start = MAX_LIFETIME - FADE_DURATION;
-    let fade = 1.0 - clamp((inst.lifetime - fade_start) / FADE_DURATION, 0.0, 1.0);
-    return noisy * fade;
+    // 実機フィードバック（2026-07-30）：泡は時間経過で自然に消える必要は
+    // ない。以前はここで寿命終了間際に密度をフェードさせていたが撤去した
+    // （doc/soap-issues.md S-35）。
+    return noisy;
 }
 
 // Instanceを円（半径は長い方の軸長）で包む。楕円の外周上のどの点も

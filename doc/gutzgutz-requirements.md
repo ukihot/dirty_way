@@ -311,7 +311,14 @@ Phase 0-1は"今すぐやる価値がある"部分、Phase 2以降は"2作目以
 
 ## 8. `dirty_way`側の対応
 
-Phase 1着手時に想定される変更：
+**2026-07-29追記：以下はPhase 1着手時点の想定であり、記載内容は既に実装済み。**
+`main.rs`は`GutzDevtoolsPlugin`を`.add_plugins(...)`に含んでおり、[ui.rs](../src/ui.rs)は
+`update_stats_text`／`StatsText`のようなハードコード実装を持たず、`update_gutz_debug_stats`が
+`GutzDebugStats::set("Foam", ...)`/`set("Quality", ...)`でFoam数・現在のQualityをdevtoolsオーバーレイへ
+渡すだけになっている（スコア/体力は`dirty_way`固有のHUDとして`ui.rs`に残っている。チャージゲージは
+doc/soap-issues.md S-19の仕様変更でノズル自体の沈み込み表現に置き換わり撤去された）。
+
+Phase 1着手時に想定されていた変更（実施済み）：
 
 - [ui.rs](../src/ui.rs) の `update_stats_text`／`StatsText`関連を削除し、
   `GutzDevtoolsPlugin` 導入 + `GutzDebugStats::set` 呼び出しに置き換える。
@@ -320,7 +327,8 @@ Phase 1着手時に想定される変更：
 - `main.rs` に `GutzDevtoolsPlugin` を`.add_plugins(...)`へ追加。
 - [quality.rs](../src/quality.rs) のキー切替UI（1〜4キー）は現状ゲーム固有だが、
   「Quality設定を切り替えられるdevtools項目」として一般化できるかはPhase 1完了後に
-  再検討する（本要件定義では対象外＝スコープ外と明記しておく）。
+  再検討する（本要件定義では対象外＝スコープ外と明記しておく。2026-07-29時点でも
+  未着手のまま）。
 
 ## 9. 非機能要件
 

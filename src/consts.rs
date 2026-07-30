@@ -17,6 +17,11 @@ use avian2d::prelude::*;
 ///   別レイヤーに分け、Bubble×Bubbleは衝突させない一方、Bubble×
 ///   LandedBubbleは衝突させる。これにより新しい泡は他の飛行中の泡は
 ///   すり抜けつつ、既に着地した泡だまりの上には正しく乗って積み上がる。
+/// - 課題S-34（2026-07-30）：LandedBubble×LandedBubbleも衝突させる必要が
+///   ある。ここが抜けていると、2個目以降の泡が着地してLandedBubbleへ
+///   切り替わった瞬間、真下の既存LandedBubbleとの衝突が消えて支えを
+///   失い、床まで沈み込んでしまう（山が高さを持てず、常に床の高さで
+///   扁平化するだけになる）。
 #[derive(PhysicsLayer, Default)]
 pub enum GameLayer {
     #[default]
@@ -106,9 +111,6 @@ pub const SPRAY_JITTER: f32 = 0.04;
 /// SCATTER_FACTOR, SCATTER_MAX)倍、オフセットが広がる。
 pub const IMPACT_SCATTER_FACTOR: f32 = 0.12;
 pub const IMPACT_SCATTER_MAX: f32 = 2.0;
-
-/// 泡の寿命（秒）。当たらなくても時間切れで消える。
-pub const BUBBLE_LIFETIME: f32 = 6.0;
 
 /// GPU側でFoam Aggregateの見た目を同時に表現できる最大数（doc/soap-model.md
 /// 第28.2節）。 `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render

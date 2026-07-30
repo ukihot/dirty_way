@@ -360,25 +360,39 @@ fn settle_landed_bubbles(
         bubble.landing = if landed_on_pile { LandingSurface::Pile } else { LandingSurface::Floor };
         commands.entity(entity).insert((
             Landed,
-            CollisionLayers::new(GameLayer::LandedBubble, [GameLayer::Floor, GameLayer::Bubble]),
+            // バグ修正（2026-07-30、実機フィードバック）：LandedBubble同士が
+            // 互いのfiltersに含まれていなかったため、2個目以降が着地して
+            // LandedBubbleへ切り替わった瞬間、真下の既存LandedBubbleとの
+            // 衝突が消え、支えを失って床まで沈み込んでいた。これでは山が
+            // 高さを持てず、どのBubbleも最終的に床の高さで扁平化するだけに
+            // なってしまう（実際の泡は下の泡に「フォスっ」と乗って高さを
+            // 増していくはず）。LandedBubble同士も衝突対象に含め、既存の
+            // 泡の上に乗ったまま支えられ続けるようにする。
+            CollisionLayers::new(
+                GameLayer::LandedBubble,
+                [GameLayer::Floor, GameLayer::Bubble, GameLayer::LandedBubble],
+            ),
+            // 実機フィードバック（2026-07-30）：着地済みの泡同士が衝突する
+            // ようになった（直上のコメント）ことで、新しい泡が横から
+            // ぶつかると既存の泡だまりが横に押しのけられてしまっていた。
+            // 実際の泡は横から押されて動くのではなく、境目がぷくっと
+            // 盛り上がって馴染むだけで、既に静止している泡の位置は
+            // 動かないはず。着地した瞬間、水平方向（X）の並進だけを
+            // ロックする——回転は元々ROTATION_LOCKEDのまま、垂直方向
+            // （Y）は支えを失えば落下し直せるようlockしない（課題S-27参照）。
+            LockedAxes::new().lock_translation_x().lock_rotation(),
         ));
     }
 }
 
-fn tick_bubble_lifetime(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut allocator: ResMut<FoamSlotAllocator>,
-    mut bubbles: Query<(Entity, &mut Bubble, Option<&FoamGpuBinding>)>,
-) {
-    for (entity, mut bubble, binding) in &mut bubbles {
+/// 実機フィードバック（2026-07-30）：泡は時間経過で自然に消える必要は
+/// ない。以前はここで`BUBBLE_LIFETIME`を超えたBubbleを寿命切れとして
+/// despawnしていたが、その処理を撤去した。`bubble.life`自体は
+/// `BUBBLE_LANDING_GRACE_PERIOD`（着地判定の猶予）が引き続き参照するため
+/// 加算だけは残す。
+fn tick_bubble_lifetime(time: Res<Time>, mut bubbles: Query<&mut Bubble>) {
+    for mut bubble in &mut bubbles {
         bubble.life += time.delta_secs();
-        if bubble.life > BUBBLE_LIFETIME {
-            if let Some(binding) = binding {
-                allocator.release(binding);
-            }
-            commands.entity(entity).despawn();
-        }
     }
 }
 

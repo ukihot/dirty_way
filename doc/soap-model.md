@@ -1,5 +1,24 @@
 # リアルタイム・ハンドソープ表現
 
+> **現状ステータス（2026-07-29以降）**：本ドキュメントの第1〜31節は、3Dトップダウン視点・
+> Avian3D・`vec3`粒子・`Transparent3d`フェーズへのレイマーチという前提で書かれた設計記録である。
+> 2026-07-29、プロジェクトは**2Dサイドビュー**（Avian2D・`vec2`・`Transparent2d`フェーズへの
+> ピクセルごとの密度場直接評価）へ方針転換した。着弾判定・扁平化・メタボール融合といった
+> **力学モデルの考え方そのもの**（第7〜13節、第27〜31節のFoam Aggregateモデル）は変更後も
+> そのまま成立しているが、`Avian3D`という固有名詞・`vec3`という型・`Transparent3d`/レイマーチと
+> いう具体的なAPI名は、以下のように読み替える必要がある。詳しい対応は末尾の
+> **第32節「2Dサイドビューへの方針転換」** にまとめた。実装の一次情報源は常にコード
+> （[src/soap.rs](../src/soap.rs)、[src/shaders/soap_compute.wgsl](../src/shaders/soap_compute.wgsl)、
+> [src/shaders/soap_render.wgsl](../src/shaders/soap_render.wgsl)、[src/bubble.rs](../src/bubble.rs)）
+> であり、本ドキュメント中のコードスニペットは設計当時の思想を示す資料として読むこと。
+>
+> | 第1〜31節の記述 | 現状（コード） |
+> |---|---|
+> | Avian3D | **Avian2D**（`avian2d` crate） |
+> | `vec3`の位置・速度・スケール | **`vec2`**（Zは廃止、X=水平・Y=高さ） |
+> | `Transparent3d`フェーズ＋レイマーチ | **`Transparent2d`**フェーズ＋ピクセルごとの密度場直接評価（奥行きが無いため） |
+> | `RenderGraphSystems::Begin`でのCompute Dispatch（第23節） | 変更なし。2Dピボット後も同じ仕組みのまま有効 |
+
 ## Prototype Architecture Design
 
 ### 1. 目的
@@ -1480,6 +1499,13 @@ Microstructure
     Bubble Void / Foam Texture / Thin Film
     第27.2節のFoamField = LiquidFilmField − BubbleVoidField を実装する
     現行のS-03加算ノイズを、減算ボイドへ拡張する形で置き換える
+    → 2026-07-30、doc/soap-issues.md S-33として簡略版を先行実装した。
+      正式なBubbleVoidFieldの「減算」ではなく、Worley風セルノイズによる
+      粒状の凹凸を密度へ加算する近似（`bubble_microstructure`、
+      soap_render.wgsl）。デフォルト品質（Normal）でも効くようにし、
+      「艶々のジェル玉」から「無数の気泡が集まった泡」への見た目の
+      改善を優先した。真のFoamField減算モデルへの置き換えは未着手のまま
+      Phase 4として残る。
 
 Phase 5+
 Bubble Dynamics（将来候補）
@@ -1609,3 +1635,56 @@ Renderer
 ```
 
 この三段階の分離こそが、本設計の中心原則である。第20〜26節（Bevy 0.19実API対応）や第31節（命名・所有権・世代番号）で行った変更は、いずれもこの原則をBevy/Avian3D/WGSLの実装へ落とし込む過程での具体化であり、原則そのものを変更するものではない。
+
+---
+
+# 32. 2026-07-29 追記：2Dサイドビューへの方針転換
+
+第1〜31節はすべて3Dトップダウン視点（Avian3D・`vec3`・`Transparent3d`へのレイマーチ）を前提に
+書かれていた。2026-07-29、実機での見た目確認（`doc/soap-issues.md` S-16以降）を経て、
+**ハンドソープ筐体を真横から見た2Dサイドビュー**へアーキテクチャごと方針転換した。第31.5節の
+「中心原則」（Simulation ≠ Macro Surface ≠ Microstructure、シミュレーション解像度と知覚解像度の分離）
+はそのまま維持されており、変わったのは視点と次元、それに伴う具体的なAPIだけである。
+
+## 32.1 変更の理由
+
+3Dトップダウンでは「円形ステージを真上から見る」構図だったため、泡の高さ方向（重力方向）は
+画面の奥行きとして表現され、レイマーチで奥行き方向にサンプリングする必要があった。しかし
+ゲーム全体が2Dサイドビュー（`README.md`参照：床の左右端から敵が迫る構成）へ切り替わったことで、
+泡はカメラのビュー平面上に直接乗る2D表現で十分になった。奥行きのレイマーチは不要になり、
+ピクセルごとにワールド座標を1回だけ求めて密度場を評価すれば、それがそのまま表面判定になる
+（`soap_render.wgsl`冒頭のコメント参照）。
+
+## 32.2 概念 → 現状（2D実装）対応表
+
+第20.2節の対応表を、現状に合わせて次のように更新する。
+
+| 設計上の概念（第2〜19節） | 3D時代の実体（第20〜26節） | 現状（2D、2026-07-29〜） |
+|---|---|---|
+| マクロ力学の一次情報源 | Avian3D（`RigidBody`/`Collider`が`vec3`） | **Avian2D**（`avian2d` crate、`RigidBody`/`Collider`は`vec2`平面。[src/bubble.rs](../src/bubble.rs)） |
+| GPU Particle Pool | `GpuParticle { position: vec3, velocity: vec3, scale: vec3, ... }` | **`FoamInstance { position: vec2, velocity: vec2, scale: vec2, ..., base_radius: f32, generation: u32, landing: u32 }`**（[src/shaders/soap_compute.wgsl](../src/shaders/soap_compute.wgsl)） |
+| Compute Dispatchのタイミング | `RenderGraphSystems::Begin` | **変更なし**。2Dピボット後も同じ仕組みのまま（[src/soap.rs](../src/soap.rs) `simulate_foam_instances`） |
+| Metaball Renderer | `Transparent3d`フェーズへのカスタム`RenderCommand`＋カメラレイのレイマーチ（`MAX_STEPS`固定ステップ） | **`Transparent2d`**フェーズへのカスタム`RenderCommand`＋ピクセルごとにワールド座標を1回だけ求める直接評価（奥行きが無いのでマーチ不要。[src/soap.rs](../src/soap.rs) `queue_soap_metaballs`、[src/shaders/soap_render.wgsl](../src/shaders/soap_render.wgsl)） |
+| 着地判定 | シェーダー内で`position.y <= table_height`のY座標比較（自前） | **Main World（Avian2D）側の権威**。`bubble::LandingSurface`（Flying/Floor/Pile）をDrive Entry経由で毎フレーム受け取るだけ（`doc/soap-issues.md` S-24） |
+| 融合（Metaball） | 密度の単純加算のみ | 密度の加算に加え、コア外側に弱い「橋渡し」の裾野（`MERGE_REACH`/`BRIDGE_STRENGTH`）を追加し、離れた泡同士も近づけば融合して見えるようにした（`doc/soap-issues.md` S-20） |
+
+## 32.3 第14節・第20〜26節の扱いについて
+
+第14節（Bevy 0.19との接続方針）・第20〜26節（GPU Particle Poolの確保、Extract→Prepare経路、
+Compute Dispatch、Metaball描画パス、WGSL具体設計）は、`vec3`/`Avian3D`/`Transparent3d`という
+語句を`vec2`/`Avian2D`/`Transparent2d`に読み替えれば、**アーキテクチャの構造としては現状の
+実装とほぼ一致する**（Compute Shaderをビュー非依存の`RenderGraphSystems::Begin`に置く、
+Metaball描画を専用ポストプロセスではなく既存の透過フェーズに1アイテムとして参加させる、
+という2つの重要な設計判断はどちらも[src/soap.rs](../src/soap.rs)にそのまま残っている）。
+一方、各節のWGSL/Rustコードスニペットそのもの（フィールドの型、フェーズ名、レイマーチの
+ループ構造など）は設計当時のものであり、現状の正確な実装は上記32.2節の対応表からリンクした
+実ファイルを参照すること。
+
+## 32.4 まとめ
+
+- 3D→2Dの方針転換は、第31.5節の中心原則（Simulation ≠ Macro Surface ≠ Microstructure）を
+  変更するものではなく、それを実現する次元とAPIを差し替えただけである。
+- Avian3D→Avian2D、`vec3`→`vec2`、レイマーチ→直接評価という3点が、コード上で確認できる
+  具体的な変更点のすべてである。
+- 方針転換に伴って新たに見つかった課題（融合の輪郭が硬い・浅い角度の着地で扁平化しない等）は
+  `doc/soap-issues.md`のS-16〜S-32として記録されている。
