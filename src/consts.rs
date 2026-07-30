@@ -97,6 +97,16 @@ pub const BUBBLE_SETTLE_DURATION: f32 = 0.12;
 /// 「一続きの水流」に見える程度まで弱めた。
 pub const SPRAY_JITTER: f32 = 0.04;
 
+/// 課題S-32（2026-07-29）：着地時、クラスター内の塊が一斉に同じ倍率で
+/// 「その場でぺたっと」潰れるだけで、塊同士の位置関係は変わらなかった。
+/// 勢いよく叩きつけられた液体は実際には飛び散るはずなので、着地の瞬間の
+/// 速度（`impact_speed`）に応じてクラスターのオフセット自体を外側へ
+/// 広げる（bubble.rs::settle_landed_bubbles、soap.rs::
+/// extract_foam_aggregates参照）。scatter = min(impact_speed *
+/// SCATTER_FACTOR, SCATTER_MAX)倍、オフセットが広がる。
+pub const IMPACT_SCATTER_FACTOR: f32 = 0.12;
+pub const IMPACT_SCATTER_MAX: f32 = 2.0;
+
 /// 泡の寿命（秒）。当たらなくても時間切れで消える。
 pub const BUBBLE_LIFETIME: f32 = 6.0;
 
@@ -104,18 +114,29 @@ pub const BUBBLE_LIFETIME: f32 = 6.0;
 /// 第28.2節）。 `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render
 /// World、GPUバッファ確保）の
 /// 両方がこの値を共有する（2箇所に独立した定数を置いて食い違わせない、
-/// S-09の教訓）。
-pub const FOAM_INSTANCE_POOL_SIZE: u32 = 512;
+/// S-09の教訓）。課題S-30でFOAM_CLUSTER_MAXを5→9に上げた分、比例して
+/// 増やしてある（同時に見た目を持てるBubble数の実質上限を維持するため）。
+pub const FOAM_INSTANCE_POOL_SIZE: u32 = 1024;
 
-/// 1つのBubbleが同時に使うFoam Instanceスロット数（doc/soap-issues.md
-/// 2026-07-28追記）。1発=1個の孤立した楕円体だと、どれだけ扁平化しても
-/// 「潰れたボール」にしか見えず、メタボール本来の「複数の塊が寄り集まって
-/// 融合した液体」という見た目にならない（soap_render.wgslのDENSITY_THRESHOLD
-/// コメント参照：旧アーキテクチャは複数Instanceの合算で閾値を超えることを
-/// 前提にしていた）。ゲームロジック（Avianの当たり判定）は引き続き1発=1
-/// RigidBodyのままにし、見た目だけ複数の小さな塊をBubble中心の周りに重ねて
-/// 配置し直すことで、その融合効果を取り戻す。
-pub const FOAM_SUB_INSTANCES: usize = 5;
+/// 1つのBubbleが同時に使うFoam Instanceスロット数の範囲（doc/soap-issues.md
+/// 2026-07-28追記、課題S-30で2026-07-29追記）。1発=1個の孤立した楕円体だと、
+/// どれだけ扁平化しても「潰れたボール」にしか見えず、メタボール本来の
+/// 「複数の塊が寄り集まって融合した液体」という見た目にならない
+/// （soap_render.wgslのDENSITY_THRESHOLDコメント参照）。ゲームロジック
+/// （Avianの当たり判定）は引き続き1発=1RigidBodyのままにし、見た目だけ
+/// 複数の小さな塊をBubble中心の周りに重ねて配置し直すことで、その融合
+/// 効果を取り戻す。
+///
+/// 課題S-30：塊の個数を毎回FOAM_CLUSTER_MAX固定にすると、配置パターン
+/// （cluster_offsets）が毎回同じ形の“花びら”になり、「ありきたりで
+/// 面白くない」見た目になっていた（実機確認）。実際のハンドソープの泡は
+/// 4〜7個くらいの不揃いな塊が集まってできているはずなので、個数自体も
+/// Bubbleごとにランダム化する（bubble::cluster_offsets参照）。
+/// スロットは常にFOAM_CLUSTER_MAX個確保するが（可変長確保は複雑なので
+/// 避ける）、実際に使う（GPUへ送る）個数はFOAM_CLUSTER_MIN〜MAXの範囲で
+/// 毎回ランダムに決める。
+pub const FOAM_CLUSTER_MIN: u32 = 4;
+pub const FOAM_CLUSTER_MAX: usize = 7;
 
 /// 敵が泡に埋もれている間の鈍足倍率と、接触が切れてから鈍足が続く猶予秒数。
 pub const TRAPPED_SPEED_MULTIPLIER: f32 = 0.15;

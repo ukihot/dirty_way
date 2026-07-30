@@ -50,6 +50,17 @@ pub struct Bubble {
     /// を下回っている状態が続いている秒数。BUBBLE_SETTLE_DURATIONに達したら
     /// 本当に静止したとみなしてStatic化する（settle_landed_bubbles参照）。
     settle_timer: f32,
+    /// 課題S-32（2026-07-29）：着地時、クラスター内の塊が一斉に同じ倍率で
+    /// 「その場でぺたっと」潰れるだけで、塊同士の位置関係（cluster_offsets）
+    /// は変わらなかった。勢いよく叩きつけられた液体は実際には飛び散る
+    /// はずなので、着地の瞬間の速度に応じてクラスターのオフセット自体を
+    /// 外側へ広げる倍率（soap.rs::extract_foam_aggregates参照）。0.0=
+    /// まだ着地の瞬間を迎えていない（初期値）。
+    pub impact_scatter: f32,
+    /// `impact_scatter`を一度だけ確定させるためのフラグ。着地後、滑って
+    /// 静止するまでの間に速度がどんどん落ちていくので、「静止直前の遅い
+    /// 速度」ではなく「最初に接触した瞬間の速度」を捉えたい。
+    impact_captured: bool,
 }
 
 /// このBubbleエンティティが対応するGPU側Foam Instanceのスロット（doc第31節）。
@@ -65,13 +76,20 @@ pub struct Bubble {
 /// （特にリスタート直後に即発射すると起きやすい。doc/soap-issues.md S-10）。
 #[derive(Component, Clone, Copy)]
 pub struct FoamGpuBinding {
-    pub slots: [u32; FOAM_SUB_INSTANCES],
+    /// 常にFOAM_CLUSTER_MAX個確保するが、実際にGPUへ送る（＝見た目に
+    /// 使う）のは先頭`active_count`個だけ（課題S-30）。
+    pub slots: [u32; FOAM_CLUSTER_MAX],
     /// 各スロットの、Bubble中心からの相対オフセット（半径1.0基準の単位
     /// ベクトル）。`soap.rs`側で実際の`bubble.radius`を掛けて使う。
     /// 複数の塊を少しずつずらして重ねて配置することで、単一Instanceでは
     /// 出せない「寄り集まって融合した液体」の見た目を作る（consts::
-    /// FOAM_SUB_INSTANCES参照）。
-    pub offsets: [Vec2; FOAM_SUB_INSTANCES],
+    /// FOAM_CLUSTER_MAX参照）。
+    pub offsets: [Vec2; FOAM_CLUSTER_MAX],
+    /// 各塊の大きさの倍率（1.0基準）。塊ごとに大きさをばらつかせることで、
+    /// 同じ大きさの塊が並ぶ単調な見た目を避ける（課題S-30）。
+    pub size_scales: [f32; FOAM_CLUSTER_MAX],
+    /// 今回のBubbleで実際に使う塊の個数（FOAM_CLUSTER_MIN〜MAX、課題S-30）。
+    pub active_count: u32,
     pub generation: u32,
 }
 
@@ -102,22 +120,50 @@ impl Default for FoamSlotAllocator {
     }
 }
 
-/// `FOAM_SUB_INSTANCES`個の塊を、Bubble中心の周りに少しずつ重なるように
-/// 配置する（1個は中心、残りは円状に並べる）。乱数で回転させることで、
-/// 発射のたびにクラスターの向きが変わり、毎回同じ形に見えるのを避ける
-/// （doc/soap-issues.md S-01/S-02と同じ「毎回同じ形問題」への対策）。
-fn cluster_offsets() -> [Vec2; FOAM_SUB_INSTANCES] {
-    let mut offsets = [Vec2::ZERO; FOAM_SUB_INSTANCES];
-    let rotation = rand::rng().random_range(0.0..TAU);
-    let ring_count = FOAM_SUB_INSTANCES - 1;
-    for (i, offset) in offsets.iter_mut().skip(1).enumerate() {
-        let angle = rotation + i as f32 / ring_count as f32 * TAU;
-        // 課題S-16：0.45だと隣接する塊同士の中心間距離に対して半径が
-        // 相対的に足りず、ソフトエッジ化しても「触れてはいるが融合しきらない」
-        // 見た目になっていた。もう少し寄せて確実にオーバーラップさせる。
-        *offset = Vec2::new(angle.cos(), angle.sin()) * 0.32;
+/// FOAM_CLUSTER_MIN〜MAX個の塊を、Bubble中心の周りに少しずつ重なるように
+/// 配置する（1個は中心、残りは円状に並べる）。
+///
+/// 課題S-30（2026-07-29）：個数を毎回FOAM_CLUSTER_MAX固定・角度も均等割り
+/// （乱数は全体の回転だけ）にしていたところ、どのBubbleも同じ「花びら」型に
+/// 見えてしまい、「毎回同じでありきたり」という指摘を受けた（実機確認）。
+/// 実際のハンドソープの泡は5〜9個くらいの不揃いな塊が寄り集まっている
+/// はずなので、個数・各塊の角度（均等割りからのブレ）・中心からの距離・
+/// 大きさをすべてランダム化し、毎回違う不揃いな「もくもく」とした外形に
+/// する。
+/// 戻り値は`(offsets, size_scales, active_count)`。`active_count`より
+/// 後ろの要素は未使用（呼び出し側がFOAM_CLUSTER_MAX個の配列を要求する
+/// ためダミー値で埋めるだけ）。
+fn cluster_offsets() -> ([Vec2; FOAM_CLUSTER_MAX], [f32; FOAM_CLUSTER_MAX], u32) {
+    let mut rng = rand::rng();
+    let mut offsets = [Vec2::ZERO; FOAM_CLUSTER_MAX];
+    let mut size_scales = [1.0f32; FOAM_CLUSTER_MAX];
+    let active_count = rng.random_range(FOAM_CLUSTER_MIN..=FOAM_CLUSTER_MAX as u32);
+
+    // 課題S-31（2026-07-29）：最初のランダム化幅（距離0.22〜0.4、大きさ
+    // 0.55〜1.05）は控えめすぎて、実機で見ると「思ったより不揃いになって
+    // いない」という指摘を受けた。飛行中の速度方向ストリーク伸長（課題
+    // S-28）が塊のシルエットを覆い隠してしまう面もあるため、ブレの幅
+    // 自体をもっと大胆に広げる。
+
+    // 中心の塊（常に存在）。ここも大きさをばらつかせる。
+    size_scales[0] = rng.random_range(0.8..1.3);
+
+    let ring_count = active_count - 1;
+    let rotation = rng.random_range(0.0..TAU);
+    for i in 1..active_count as usize {
+        // 均等割りの角度から±65%の範囲でランダムにずらし、正多角形的な
+        // 規則性を大きく崩す。
+        let ideal_angle = rotation + (i - 1) as f32 / ring_count as f32 * TAU;
+        let jitter = rng.random_range(-0.65..0.65) * (TAU / ring_count as f32);
+        let angle = ideal_angle + jitter;
+        // 中心からの距離を大きくばらつかせる（近くにぎゅっと寄る塊も、
+        // 離れてぽつんと飛び出す塊もある方が「もくもく」して見える）。
+        let dist = rng.random_range(0.12..0.6);
+        offsets[i] = Vec2::new(angle.cos(), angle.sin()) * dist;
+        size_scales[i] = rng.random_range(0.4..1.35);
     }
-    offsets
+
+    (offsets, size_scales, active_count)
 }
 
 impl FoamSlotAllocator {
@@ -132,18 +178,23 @@ impl FoamSlotAllocator {
         if self.active_bindings >= quality.max_aggregates {
             return None;
         }
-        if self.free_slots.len() < FOAM_SUB_INSTANCES {
+        // 課題S-30：実際に使うのは`active_count`（FOAM_CLUSTER_MIN〜MAX）
+        // 個だけだが、可変長のスロット確保は複雑になるため、常に
+        // FOAM_CLUSTER_MAX個を確保する（使わない分は単に駆動されない
+        // ままになるだけで、GPU側の見た目には一切現れない）。
+        if self.free_slots.len() < FOAM_CLUSTER_MAX {
             return None;
         }
 
-        let mut slots = [0u32; FOAM_SUB_INSTANCES];
+        let mut slots = [0u32; FOAM_CLUSTER_MAX];
         for slot in &mut slots {
             *slot = self.free_slots.pop().expect("checked len above");
         }
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
         self.active_bindings += 1;
-        Some(FoamGpuBinding { slots, offsets: cluster_offsets(), generation })
+        let (offsets, size_scales, active_count) = cluster_offsets();
+        Some(FoamGpuBinding { slots, offsets, size_scales, active_count, generation })
     }
 
     pub fn release(&mut self, binding: &FoamGpuBinding) {
@@ -193,6 +244,8 @@ pub fn spawn_bubble(
             hit_enemies: Vec::new(),
             landing: LandingSurface::Flying,
             settle_timer: 0.0,
+            impact_scatter: 0.0,
+            impact_captured: false,
         },
         RigidBody::Dynamic,
         Collider::circle(radius),
@@ -284,6 +337,16 @@ fn settle_landed_bubbles(
         let touched_floor =
             collisions.entities_colliding_with(entity).any(|other| other == floor_entity);
         let touching_ground = landed_on_pile || touched_floor;
+
+        // 課題S-32：クラスターの飛び散り具合（impact_scatter）は、着地して
+        // 滑りながらどんどん減速していく途中の速度ではなく、最初に接触
+        // した瞬間の速度で決めたい。着地後は既にDynamicのまま滑っている
+        // ことがあるので、`touching_ground`になった最初のフレームだけ捉える。
+        if touching_ground && !bubble.impact_captured {
+            bubble.impact_captured = true;
+            bubble.impact_scatter =
+                (velocity.0.length() * IMPACT_SCATTER_FACTOR).min(IMPACT_SCATTER_MAX);
+        }
 
         if touching_ground && velocity.0.length() < BUBBLE_SETTLE_SPEED {
             bubble.settle_timer += dt;

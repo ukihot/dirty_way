@@ -45,7 +45,7 @@ use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
 
 use crate::bubble::{Bubble, FoamGpuBinding, LandingSurface};
-use crate::consts::{FOAM_INSTANCE_POOL_SIZE, FOAM_SUB_INSTANCES};
+use crate::consts::FOAM_INSTANCE_POOL_SIZE;
 use crate::quality::{FoamQuality, FoamQualitySetting};
 
 /// クラスターを構成する各塊の半径。課題S-16：0.75だと`cluster_offsets`の
@@ -198,23 +198,29 @@ fn extract_foam_aggregates(
 ) {
     extracted.0.clear();
     for (transform, velocity, bubble, binding) in &bubbles {
-        // 1 Bubble = 1 RigidBodyのままだが、見た目は`FOAM_SUB_INSTANCES`個の
-        // 塊をBubble中心の周りにずらして重ね、メタボール融合させる
-        // （consts::FOAM_SUB_INSTANCES参照）。全サブInstanceは同じ
+        // 1 Bubble = 1 RigidBodyのままだが、見た目は`binding.active_count`
+        // 個（課題S-30：Bubbleごとにランダムな5〜9個）の塊をBubble中心の
+        // 周りにずらして重ね、メタボール融合させる。全サブInstanceは同じ
         // position.y・velocity・landingを共有する。
         let landing = match bubble.landing {
             LandingSurface::Flying => 0u32,
             LandingSurface::Floor => 1u32,
             LandingSurface::Pile => 2u32,
         };
-        for i in 0..FOAM_SUB_INSTANCES {
+        // 課題S-32：着地の瞬間の勢いに応じて、クラスターの塊同士が実際に
+        // 飛び散って広がって見えるよう、オフセット自体を外側へ広げる
+        // （bubble::settle_landed_bubbles参照。中心の塊(offset==ZERO)は
+        // 広げても位置が変わらないので、そのまま「飛び散りの中心」になる）。
+        let scatter = 1.0 + bubble.impact_scatter;
+        for i in 0..binding.active_count as usize {
             extracted.0.push(ExtractedAggregate {
                 slot: binding.slots[i],
                 generation: binding.generation,
-                position: transform.translation.xy() + binding.offsets[i] * bubble.radius,
+                position: transform.translation.xy() + binding.offsets[i] * scatter * bubble.radius,
                 velocity: velocity.0,
                 landing,
-                radius: bubble.radius * FOAM_SUB_INSTANCE_RADIUS_SCALE,
+                // 課題S-30：塊ごとの大きさをばらつかせる（size_scales）。
+                radius: bubble.radius * FOAM_SUB_INSTANCE_RADIUS_SCALE * binding.size_scales[i],
             });
         }
     }
