@@ -2,11 +2,28 @@ use std::time::Duration;
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
+use bevy_gutzgutz::atlas::GutzAtlasRegistry;
 use bevy_gutzgutz::lifecycle::in_game;
 use rand::RngExt;
 
 use crate::consts::*;
 use crate::state::{GameState, Health};
+
+/// `assets/character/knight/walk_10`のアトラス名（bevy_gutzgutz atlas
+/// 命名規約：namespace + leaf名。`build.rs`が生成する
+/// `assets/generated/atlas/manifest.toml`参照）。
+const KNIGHT_WALK: &str = "knight/walk";
+/// 歩行アニメーションのフレーム数（walk_10 = 10枚）。
+const KNIGHT_WALK_FRAMES: u32 = 10;
+/// 1フレームあたりの表示秒数（10fps相当）。
+const KNIGHT_FRAME_DURATION: f32 = 0.1;
+/// ナイトの元画像の縦横比（587×707px）。表示サイズを`EnemyKind::radius`
+/// から決めるときにこの比率を保つ。
+const KNIGHT_ASPECT: f32 = 587.0 / 707.0;
+/// 敵の当たり判定（EnemyKind::radius）に対して、見た目のナイトを
+/// どれだけ大きく表示するか。円のコライダーそのままの大きさだと
+/// キャラクターとして小さすぎるため。
+const KNIGHT_VISUAL_SCALE: f32 = 1.8;
 
 /// 汚れの種類。README の「油汚れ・ホコリ・泥人間」に対応。
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +96,13 @@ pub struct Enemy {
     pub health: i32,
 }
 
+/// ナイトの歩行アニメーション（`knight/walk`の10枚を巡回表示する）状態。
+#[derive(Component, Default)]
+struct WalkAnimation {
+    frame: u32,
+    timer: f32,
+}
+
 /// 泡に埋もれている間だけ付与される鈍足状態。bubble.rs が接触中に毎フレーム
 /// remaining を延長し、enemy.rs の tick_trapped が時間切れで剥がす。
 #[derive(Component)]
@@ -107,7 +131,7 @@ impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EnemySpawnTimer>().add_systems(
             Update,
-            (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center)
+            (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center, animate_enemies)
                 .chain()
                 .run_if(in_game::<GameState>()),
         );
@@ -118,8 +142,7 @@ fn spawn_enemies(
     time: Res<Time>,
     mut spawn_timer: ResMut<EnemySpawnTimer>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    atlas: Res<GutzAtlasRegistry>,
 ) {
     spawn_timer.elapsed += time.delta_secs();
     let interval = (ENEMY_SPAWN_INTERVAL_START - spawn_timer.elapsed * DIFFICULTY_RAMP_PER_SEC)
@@ -137,8 +160,33 @@ fn spawn_enemies(
     let kind = EnemyKind::random(&mut rng);
     let pos = Vec2::new(side * ENEMY_SPAWN_RADIUS, kind.radius());
 
+    // 見た目はグツグツ（bevy_gutzgutz）のアトラスから読み込んだ
+    // `assets/character/knight`のナイトに統一する（旧：種類ごとの色付き円）。
+    // 当たり判定はこれまで通りEnemyKind::radiusの円のまま——見た目と
+    // 判定サイズを一致させる必要は無い（doc：GutzAtlasFrameは描画方式を
+    // 問わない生データを返すだけで、Sprite/Meshどちらで使うかは呼び出し側次第）。
+    let Some(frame) = atlas.frame(KNIGHT_WALK, 0) else {
+        // アトラス未ロード・manifest読み込み失敗時は見た目だけ諦める
+        // （ゲームロジックには影響しない。当たり判定・移動・撃破は機能する）。
+        commands.spawn((
+            Enemy { kind, health: kind.max_health() },
+            RigidBody::Kinematic,
+            Collider::circle(kind.radius()),
+            CollisionLayers::new(
+                GameLayer::Enemy,
+                [GameLayer::Floor, GameLayer::Bubble, GameLayer::LandedBubble],
+            ),
+            Transform::from_translation(pos.extend(0.0)),
+        ));
+        return;
+    };
+
+    let height = kind.radius() * 2.0 * KNIGHT_VISUAL_SCALE;
+    let width = height * KNIGHT_ASPECT;
+
     commands.spawn((
         Enemy { kind, health: kind.max_health() },
+        WalkAnimation::default(),
         RigidBody::Kinematic,
         Collider::circle(kind.radius()),
         // 課題S-17/S-24：Bubble（飛行中）・LandedBubble（着地済み）・床とは
@@ -148,10 +196,38 @@ fn spawn_enemies(
             GameLayer::Enemy,
             [GameLayer::Floor, GameLayer::Bubble, GameLayer::LandedBubble],
         ),
-        Mesh2d(meshes.add(Circle::new(kind.radius()))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
+        Sprite {
+            image: frame.image,
+            rect: Some(frame.pixel_rect),
+            custom_size: Some(Vec2::new(width, height)),
+            color: kind.color(),
+            // 右端からスポーンした（中心へ向かって左へ進む）ナイトは反転して
+            // 進行方向を向かせる。元画像がどちらを向いているかは実機で
+            // 確認して必要なら符号を反転する。
+            flip_x: side > 0.0,
+            ..default()
+        },
         Transform::from_translation(pos.extend(0.0)),
     ));
+}
+
+/// `knight/walk`の10枚を巡回表示して歩行アニメーションを付ける。
+fn animate_enemies(
+    time: Res<Time>,
+    atlas: Res<GutzAtlasRegistry>,
+    mut enemies: Query<(&mut WalkAnimation, &mut Sprite)>,
+) {
+    for (mut anim, mut sprite) in &mut enemies {
+        anim.timer += time.delta_secs();
+        if anim.timer < KNIGHT_FRAME_DURATION {
+            continue;
+        }
+        anim.timer -= KNIGHT_FRAME_DURATION;
+        anim.frame = (anim.frame + 1) % KNIGHT_WALK_FRAMES;
+        if let Some(frame) = atlas.frame(KNIGHT_WALK, anim.frame) {
+            sprite.rect = Some(frame.pixel_rect);
+        }
+    }
 }
 
 /// 泡に埋もれてから TRAPPED_LINGER_TIME 秒が経つと鈍足状態を解除する。

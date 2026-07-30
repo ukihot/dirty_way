@@ -34,6 +34,8 @@ struct AtlasManifest {
 struct AtlasEntry {
     image: String,
     frame_count: u32,
+    tile_width: u32,
+    tile_height: u32,
     columns: u32,
 }
 
@@ -45,6 +47,10 @@ pub struct GutzAtlasFrame {
     pub image: Handle<Image>,
     /// アトラス画像内でのこのフレームのUV矩形（0.0〜1.0正規化、左上原点）。
     pub uv_rect: Rect,
+    /// アトラス画像内でのこのフレームのピクセル矩形。Bevyの`Sprite::rect`
+    /// （2D）はピクセル空間を取る（0.0〜1.0正規化のuv_rectとは単位が違う）
+    /// ので、そのまま渡せる形をここで用意しておく。
+    pub pixel_rect: Rect,
 }
 
 /// マニフェスト（`manifest.toml`）とアトラス画像群を`assets/`配下から探す
@@ -77,7 +83,11 @@ impl GutzAtlasRegistry {
         let tile_u = 1.0 / entry.columns as f32;
         let uv_rect =
             Rect::new(index as f32 * tile_u, 0.0, (index as f32 + 1.0) * tile_u, 1.0);
-        Some(GutzAtlasFrame { image: image.clone(), uv_rect })
+        let tile_w = entry.tile_width as f32;
+        let tile_h = entry.tile_height as f32;
+        let pixel_rect =
+            Rect::new(index as f32 * tile_w, 0.0, (index as f32 + 1.0) * tile_w, tile_h);
+        Some(GutzAtlasFrame { image: image.clone(), uv_rect, pixel_rect })
     }
 
     /// `name`が持つフレーム数。`name`が未登録なら`None`。

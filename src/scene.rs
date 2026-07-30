@@ -45,7 +45,16 @@ fn setup_scene(mut commands: Commands) {
         Floor,
         RigidBody::Static,
         Collider::half_space(Vec2::Y),
-        CollisionLayers::new(GameLayer::Floor, [GameLayer::Bubble, GameLayer::Enemy]),
+        // 課題S-29（2026-07-29）：着地済みの泡はCollisionLayersのmembershipsが
+        // Bubble→LandedBubbleへ切り替わる（bubble.rs::settle_landed_bubbles、
+        // 課題S-24）。ここにLandedBubbleを含め忘れていたため、床に直接
+        // 着地して静止した瞬間、床との相互衝突条件が成立しなくなり、
+        // Dynamicのまま重力に従って床をすり抜けて落ち続けてしまっていた
+        // （実機確認）。
+        CollisionLayers::new(
+            GameLayer::Floor,
+            [GameLayer::Bubble, GameLayer::LandedBubble, GameLayer::Enemy],
+        ),
         Transform::default(),
     ));
     commands.spawn((
