@@ -112,6 +112,16 @@ pub const SPRAY_JITTER: f32 = 0.04;
 pub const IMPACT_SCATTER_FACTOR: f32 = 0.12;
 pub const IMPACT_SCATTER_MAX: f32 = 2.0;
 
+/// 課題S-40（2026-07-30、実機フィードバック）：S-35で泡が時間経過で
+/// 自然に消えなくなった結果、床全体が見えない泡で埋め尽くされ、敵が
+/// 出現直後に即座に倒されて先へ進めなくなる（ゲームとして事実上
+/// 終わらない）不具合が起きた。個々の泡を時間で消す仕組みは復活させず、
+/// 「同時に存在できる泡の総数」に上限を設け、超えた分は最も古い泡から
+/// 実体ごと（物理・当たり判定込みで）despawnする（bubble.rs::
+/// BubblePopulation）。SPRAY_INTERVAL間隔・NOZZLE_PRESS_TIMEでの連射量を
+/// 踏まえ、数分程度遊べば入れ替わりが起きる程度の値。
+pub const MAX_LIVE_BUBBLES: usize = 500;
+
 /// GPU側でFoam Aggregateの見た目を同時に表現できる最大数（doc/soap-model.md
 /// 第28.2節）。 `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render
 /// World、GPUバッファ確保）の

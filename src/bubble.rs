@@ -233,6 +233,40 @@ impl FoamSlotAllocator {
     }
 }
 
+/// 課題S-40（2026-07-30、実機フィードバック）：泡全体（見た目の有無を
+/// 問わない）の生成順キュー。S-35で泡が時間経過で消えなくなったことで、
+/// 何もしなければ床全体が（見えない泡も含めて）埋め尽くされ、敵が出現
+/// 直後に即座に倒されて先へ進めなくなっていた（「無限に終わらない状態」）。
+/// `consts::MAX_LIVE_BUBBLES`を超えたら、最も古い泡から実体ごと
+/// （`FoamSlotAllocator`の見た目・物理エンティティともに）despawnする。
+///
+/// `FoamSlotAllocator::bindings`（GPU描画予算＝見た目だけの上限、S-39）とは
+/// 別軸——こちらは「この場に存在してよい泡の総数」というゲームプレイ上の
+/// 上限を管理する。
+#[derive(Resource, Default)]
+pub struct BubblePopulation {
+    order: VecDeque<Entity>,
+}
+
+impl BubblePopulation {
+    fn push(&mut self, entity: Entity) {
+        self.order.push_back(entity);
+    }
+
+    /// `entity`を台帳から取り除く（out-of-bounds等、生成順に依らない
+    /// despawn用）。台帳に無い`entity`を渡しても無害。
+    fn remove(&mut self, entity: Entity) {
+        if let Some(pos) = self.order.iter().position(|e| *e == entity) {
+            self.order.remove(pos);
+        }
+    }
+
+    /// 総数が`max`を超えている間、最も古い泡を1つ追い出す。
+    fn evict_oldest_if_over(&mut self, max: usize) -> Option<Entity> {
+        if self.order.len() > max { self.order.pop_front() } else { None }
+    }
+}
+
 /// 着地済み（＝次のBubbleが乗れる「地形」になった）の泡につける目印。
 /// `settle_landed_bubbles`は毎フレーム全Bubbleを見なくて済むよう、まだ
 /// 着地していないもの（このマーカーが無いもの）だけを見る（課題S-27：
@@ -244,7 +278,7 @@ pub struct BubblePlugin;
 
 impl Plugin for BubblePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FoamSlotAllocator>().add_systems(
+        app.init_resource::<FoamSlotAllocator>().init_resource::<BubblePopulation>().add_systems(
             Update,
             (
                 tick_bubble_lifetime,
@@ -260,6 +294,7 @@ impl Plugin for BubblePlugin {
 pub fn spawn_bubble(
     commands: &mut Commands,
     allocator: &mut FoamSlotAllocator,
+    population: &mut BubblePopulation,
     quality: FoamQualityProfile,
     position: Vec2,
     velocity: Vec2,
@@ -345,6 +380,20 @@ pub fn spawn_bubble(
     };
     if let Some(binding) = binding {
         commands.entity(id).insert(binding);
+    }
+
+    // 課題S-40（2026-07-30、実機フィードバック）：見た目（GPUスロット）の
+    // 上限（S-39）とは別に、泡の総数そのものにも上限を設ける。無限に
+    // 泡が生き続けると（S-35）、見えない泡も含めて床全体が埋め尽くされ、
+    // 敵が出現直後に即死し続けてゲームが事実上終わらなくなっていた
+    // （「無限に終わらない状態」「見えない泡が消えない」）。
+    // MAX_LIVE_BUBBLESを超えたら、最も古い泡を実体ごとdespawnする——
+    // 見た目だけを取り上げるS-39の`evict_oldest`とは異なり、物理・
+    // 当たり判定ごと本当に消える。
+    population.push(id);
+    if let Some(evicted) = population.evict_oldest_if_over(MAX_LIVE_BUBBLES) {
+        allocator.release(evicted);
+        commands.entity(evicted).despawn();
     }
 }
 
@@ -450,14 +499,17 @@ fn tick_bubble_lifetime(time: Res<Time>, mut bubbles: Query<&mut Bubble>) {
 fn despawn_out_of_bounds(
     mut commands: Commands,
     mut allocator: ResMut<FoamSlotAllocator>,
+    mut population: ResMut<BubblePopulation>,
     bubbles: Query<(Entity, &Transform), With<Bubble>>,
 ) {
     for (entity, transform) in &bubbles {
         if transform.translation.y < -5.0
             || transform.translation.length() > BUBBLE_DESPAWN_DISTANCE
         {
-            // release()はBindingを持たないentityに対してはno-op（S-39）。
+            // release()/remove()はBindingや台帳エントリを持たないentityに
+            // 対してはno-op（S-39/S-40）。
             allocator.release(entity);
+            population.remove(entity);
             commands.entity(entity).despawn();
         }
     }

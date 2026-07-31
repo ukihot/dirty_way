@@ -6,7 +6,7 @@ use bevy_gutzgutz::lifecycle::{in_game, not_paused};
 use rand::RngExt;
 
 use crate::actions::PlayerAction;
-use crate::bubble::{FoamSlotAllocator, spawn_bubble};
+use crate::bubble::{BubblePopulation, FoamSlotAllocator, spawn_bubble};
 use crate::consts::*;
 use crate::quality::{FoamQualityProfile, FoamQualitySetting};
 use crate::state::GameState;
@@ -98,6 +98,7 @@ fn update_nozzle_press(
     aim: Res<Aim>,
     mut commands: Commands,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
+    mut foam_population: ResMut<BubblePopulation>,
     foam_quality: Res<FoamQualitySetting>,
 ) {
     let dt = time.delta_secs();
@@ -125,7 +126,13 @@ fn update_nozzle_press(
     }
     press.spray_cooldown += SPRAY_INTERVAL;
 
-    fire_spray_droplet(&mut commands, &mut foam_allocator, foam_quality.0.profile(), &aim);
+    fire_spray_droplet(
+        &mut commands,
+        &mut foam_allocator,
+        &mut foam_population,
+        foam_quality.0.profile(),
+        &aim,
+    );
 }
 
 /// ノズルの見た目の高さ・向きを、押し込み具合（NozzlePress::depth）と
@@ -152,6 +159,7 @@ fn nozzle_anchor(depth: f32) -> Vec2 {
 fn fire_spray_droplet(
     commands: &mut Commands,
     foam_allocator: &mut FoamSlotAllocator,
+    foam_population: &mut BubblePopulation,
     foam_quality_profile: FoamQualityProfile,
     aim: &Aim,
 ) {
@@ -170,6 +178,7 @@ fn fire_spray_droplet(
     spawn_bubble(
         commands,
         foam_allocator,
+        foam_population,
         foam_quality_profile,
         spawn_pos,
         velocity,

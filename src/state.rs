@@ -4,7 +4,7 @@ use bevy_gutzgutz::lifecycle::{GutzExecutionContext, GutzLifecycleState, GutzPau
 use bevy_gutzgutz::save::{GutzLoadRequest, GutzLoaded, GutzSaveRequest};
 
 use crate::actions::PlayerAction;
-use crate::bubble::{Bubble, FoamSlotAllocator};
+use crate::bubble::{Bubble, BubblePopulation, FoamSlotAllocator};
 use crate::consts::PLAYER_MAX_HEALTH;
 use crate::enemy::{Enemy, EnemySpawnTimer};
 use crate::player::NozzlePress;
@@ -105,6 +105,7 @@ fn reset_game(
     mut press: ResMut<NozzlePress>,
     mut spawn_timer: ResMut<EnemySpawnTimer>,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
+    mut foam_population: ResMut<BubblePopulation>,
     enemies: Query<Entity, With<Enemy>>,
     bubbles: Query<Entity, With<Bubble>>,
 ) {
@@ -125,6 +126,8 @@ fn reset_game(
         foam_allocator.release(entity);
         commands.entity(entity).despawn();
     }
+    // 全Bubbleをdespawnしたので、生成順台帳（S-40）もまとめて空にする。
+    *foam_population = BubblePopulation::default();
 }
 
 fn restart_input(
