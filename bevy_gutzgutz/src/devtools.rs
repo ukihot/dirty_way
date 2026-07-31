@@ -16,17 +16,16 @@ mod spawn_entity;
 mod stats;
 mod time_scale;
 
-pub use god_mode::GutzGodMode;
-pub use screenshot::take_screenshot;
-pub use spawn_entity::GutzSpawnRegistry;
-pub use stats::GutzDebugStats;
-
 #[cfg(feature = "devtools-physics3d")]
 use avian3d::debug_render::PhysicsDebugPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::time::Virtual;
-use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+pub use god_mode::GutzGodMode;
+pub use screenshot::take_screenshot;
+pub use spawn_entity::GutzSpawnRegistry;
+pub use stats::GutzDebugStats;
 
 /// devtoolsのキーバインド。ゲーム側で`insert_resource`して上書きできる。
 #[derive(Resource, Clone, Copy)]

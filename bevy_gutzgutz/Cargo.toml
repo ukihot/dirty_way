@@ -24,13 +24,21 @@ lifecycle = ["bevy/bevy_state"]
 # keyboard/mouse/gamepadは消費側ゲームの設定に依存させず、gutzgutz自身が
 # 自己完結して要求する（devtools/interactionと同じ方針）。
 input = ["lifecycle", "dep:serde", "dep:toml", "bevy/keyboard", "bevy/mouse", "bevy/gamepad", "bevy/bevy_log"]
-ui = []
+# GutzUiPlugin（画面スタック）＋モーダルパネルビルダー（`Node`/`BackgroundColor`
+# を使うため`bevy/bevy_ui`が必要）。
+ui = ["bevy/bevy_ui"]
 # GutzSavePlugin。セーブデータのTOML化にserde/tomlを使う。OS標準の
 # セーブ場所解決（Windows/macOS/Linuxで作法が違う）に`directories`crateを使う。
 # 保存/読み込みの失敗理由は`GutzSaveError`（thiserror）として型付けする。
 save = ["dep:serde", "dep:toml", "dep:directories", "dep:thiserror", "bevy/bevy_log"]
 audio = []
-camera = []
+# GutzCameraPlugin。`Camera2d`/`OrthographicProjection`/`ScalingMode`は
+# `bevy_camera`crateにあるため`bevy/bevy_camera`が必要（interactionと同じ
+# サブfeature）。
+camera = ["bevy/bevy_camera"]
+# 周期タイマー（GutzRampTimer）。`bevy::time::Timer`はbevy_internalの
+# 非オプション依存（常に有効）のため、追加の`bevy/xxx`は不要。
+pacing = []
 # GutzSteamPlugin。Steam未接続時の警告ログにbevy/bevy_logを使う。
 steam = ["dep:bevy-steamworks", "bevy/bevy_log"]
 # GutzAtlasPlugin（ランタイム）。atlas_build::packが`assets/`配下に生成した
@@ -38,6 +46,10 @@ steam = ["dep:bevy-steamworks", "bevy/bevy_log"]
 # とアトラス画像（こちらはAssetServer経由の通常のBevyアセット）を読み込み、
 # texture名+フレーム番号での名前引きを提供する（README.md参照）。
 atlas = ["dep:serde", "dep:toml", "dep:thiserror", "bevy/bevy_image", "bevy/bevy_asset", "bevy/bevy_log"]
+# GutzSpriteAnimation（2D Sprite向けアトラス自動再生）。atlas本体は描画方式
+# を問わない設計を保つため、Sprite依存はこの独立featureへ分離する
+# （devtools-physics3dと同じ「本体から重い/限定的な依存を分離する」パターン）。
+atlas-sprite2d = ["atlas", "bevy/bevy_sprite"]
 # atlas_build::pack。ゲーム側の`build.rs`から呼ぶビルド専用ロジックで、
 # `image`crateでのPNGデコード/パッキングと命名規約の検証を行う。Bevy本体は
 # 一切importしない（atlas_build.rs内に`use bevy::`は無い）——ビルドスクリプト

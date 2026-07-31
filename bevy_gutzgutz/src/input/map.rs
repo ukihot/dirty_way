@@ -1,9 +1,9 @@
-use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::lifecycle::{GutzExecutionContext, GutzLifecycleState};
+use bevy::prelude::*;
 
 use super::source::GutzInputSource;
+use crate::lifecycle::{GutzExecutionContext, GutzLifecycleState};
 
 /// ゲーム側が定義する「プレイヤーが何をしたいか」を表すAction型が満たすべき
 /// 制約をまとめたマーカートレイト。振る舞いの実装は不要（値として使える型
@@ -78,7 +78,11 @@ pub struct GutzActionState<A: GutzAction> {
 
 impl<A: GutzAction> Default for GutzActionState<A> {
     fn default() -> Self {
-        Self { pressed: HashSet::default(), just_pressed: HashSet::default(), just_released: HashSet::default() }
+        Self {
+            pressed: HashSet::default(),
+            just_pressed: HashSet::default(),
+            just_released: HashSet::default(),
+        }
     }
 }
 

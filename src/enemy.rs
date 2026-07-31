@@ -1,9 +1,9 @@
-use std::time::Duration;
-
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::atlas::GutzAtlasRegistry;
+use bevy_gutzgutz::atlas_sprite2d::GutzSpriteAnimation;
 use bevy_gutzgutz::lifecycle::in_game;
+use bevy_gutzgutz::pacing::GutzRampTimer;
 use rand::RngExt;
 
 use crate::consts::*;
@@ -13,9 +13,9 @@ use crate::state::{GameState, Health};
 /// 命名規約：namespace + leaf名。`build.rs`が生成する
 /// `assets/generated/atlas/manifest.toml`参照）。
 const KNIGHT_WALK: &str = "knight/walk";
-/// 歩行アニメーションのフレーム数（walk_10 = 10枚）。
-const KNIGHT_WALK_FRAMES: u32 = 10;
-/// 1フレームあたりの表示秒数（10fps相当）。
+/// 1フレームあたりの表示秒数（10fps相当）。フレーム数自体は
+/// `GutzAtlasRegistry`（マニフェスト由来）から自動で引かれるため、ここでは
+/// 持たない（bevy_gutzgutz::atlas_sprite2d::GutzSpriteAnimation参照）。
 const KNIGHT_FRAME_DURATION: f32 = 0.1;
 /// ナイトの元画像の縦横比（587×707px）。表示サイズを`EnemyKind::radius`
 /// から決めるときにこの比率を保つ。
@@ -96,13 +96,6 @@ pub struct Enemy {
     pub health: i32,
 }
 
-/// ナイトの歩行アニメーション（`knight/walk`の10枚を巡回表示する）状態。
-#[derive(Component, Default)]
-struct WalkAnimation {
-    frame: u32,
-    timer: f32,
-}
-
 /// 泡に埋もれている間だけ付与される鈍足状態。bubble.rs が接触中に毎フレーム
 /// remaining を延長し、enemy.rs の tick_trapped が時間切れで剥がす。
 #[derive(Component)]
@@ -110,18 +103,21 @@ pub struct Trapped {
     pub remaining: f32,
 }
 
+/// 敵の出現間隔（開始値・下限）と難易度上昇レートは`GutzRampTimer`（gutzgutz、
+/// `bevy_gutzgutz::pacing`）へ委譲する。
+/// 「時間経過で間隔が短くなる周期タイマー」 はplayer.rsの`NozzlePress.
+/// spray_cooldown`（ランプなし版）と合わせ、この
+/// コードベースで2箇所独立に書かれていたパターンだったため抽出した。
 #[derive(Resource)]
-pub struct EnemySpawnTimer {
-    timer: Timer,
-    elapsed: f32,
-}
+pub struct EnemySpawnTimer(GutzRampTimer);
 
 impl Default for EnemySpawnTimer {
     fn default() -> Self {
-        Self {
-            timer: Timer::from_seconds(ENEMY_SPAWN_INTERVAL_START, TimerMode::Repeating),
-            elapsed: 0.0,
-        }
+        Self(GutzRampTimer::new(
+            ENEMY_SPAWN_INTERVAL_START,
+            ENEMY_SPAWN_INTERVAL_MIN,
+            DIFFICULTY_RAMP_PER_SEC,
+        ))
     }
 }
 
@@ -131,7 +127,7 @@ impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EnemySpawnTimer>().add_systems(
             Update,
-            (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center, animate_enemies)
+            (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center)
                 .chain()
                 .run_if(in_game::<GameState>()),
         );
@@ -144,13 +140,7 @@ fn spawn_enemies(
     mut commands: Commands,
     atlas: Res<GutzAtlasRegistry>,
 ) {
-    spawn_timer.elapsed += time.delta_secs();
-    let interval = (ENEMY_SPAWN_INTERVAL_START - spawn_timer.elapsed * DIFFICULTY_RAMP_PER_SEC)
-        .max(ENEMY_SPAWN_INTERVAL_MIN);
-    spawn_timer.timer.set_duration(Duration::from_secs_f32(interval));
-    spawn_timer.timer.tick(time.delta());
-
-    if !spawn_timer.timer.just_finished() {
+    if !spawn_timer.0.tick(time.delta()) {
         return;
     }
 
@@ -186,7 +176,7 @@ fn spawn_enemies(
 
     commands.spawn((
         Enemy { kind, health: kind.max_health() },
-        WalkAnimation::default(),
+        GutzSpriteAnimation::new(KNIGHT_WALK, KNIGHT_FRAME_DURATION),
         RigidBody::Kinematic,
         Collider::circle(kind.radius()),
         // 課題S-17/S-24：Bubble（飛行中）・LandedBubble（着地済み）・床とは
@@ -209,25 +199,6 @@ fn spawn_enemies(
         },
         Transform::from_translation(pos.extend(0.0)),
     ));
-}
-
-/// `knight/walk`の10枚を巡回表示して歩行アニメーションを付ける。
-fn animate_enemies(
-    time: Res<Time>,
-    atlas: Res<GutzAtlasRegistry>,
-    mut enemies: Query<(&mut WalkAnimation, &mut Sprite)>,
-) {
-    for (mut anim, mut sprite) in &mut enemies {
-        anim.timer += time.delta_secs();
-        if anim.timer < KNIGHT_FRAME_DURATION {
-            continue;
-        }
-        anim.timer -= KNIGHT_FRAME_DURATION;
-        anim.frame = (anim.frame + 1) % KNIGHT_WALK_FRAMES;
-        if let Some(frame) = atlas.frame(KNIGHT_WALK, anim.frame) {
-            sprite.rect = Some(frame.pixel_rect);
-        }
-    }
 }
 
 /// 泡に埋もれてから TRAPPED_LINGER_TIME 秒が経つと鈍足状態を解除する。

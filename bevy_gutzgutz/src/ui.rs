@@ -13,9 +13,10 @@
 //! どんな見た目のUIをスポーン/despawnするかはゲーム側がこれらのメッセージを
 //! 購読して決める。
 
-use bevy::prelude::*;
-use core::marker::PhantomData;
 use core::fmt::Debug;
+use core::marker::PhantomData;
+
+use bevy::prelude::*;
 
 /// ゲーム側が定義する「今どのUI画面が開いているか」を表す型が満たすべき
 /// 制約をまとめたマーカートレイト。[`crate::lifecycle::GutzLifecycleState`]
@@ -131,4 +132,53 @@ impl<T: GutzUiScreen> Plugin for GutzUiPlugin<T> {
             .add_message::<GutzUiScreenClosed<T>>()
             .add_systems(Update, detect_screen_changes::<T>);
     }
+}
+
+/// 全画面・中央寄せ・縦積みの「モーダルダイアログの枠」ビルダー。
+///
+/// Title/Pause/GameOverのような画面は、どのゲームでもほぼ同じ骨組み
+/// （画面全体を覆うNode＋背景色のオーバーレイ＋中央に縦積みのテキスト行）を
+/// 持つ。中身（Text等）はゲーム側が`.with_children`で足す——ここが持つのは
+/// あくまで共通のNode/BackgroundColor設定という「部品」まで
+/// （doc/gutzgutz-requirements.md「UI」節：ゲージ・ダイアログ等の**部品**は
+/// スコープ内、ゲーム固有のHUD構成そのものはスコープ外）。
+#[derive(Clone, Copy, Debug)]
+pub struct GutzModalPanelStyle {
+    pub background: Color,
+    pub row_gap: Val,
+}
+
+impl Default for GutzModalPanelStyle {
+    fn default() -> Self {
+        Self { background: Color::srgba(0.0, 0.0, 0.0, 0.6), row_gap: Val::Px(12.0) }
+    }
+}
+
+/// 全画面・中央寄せ・縦積みのパネル「枠」を1エンティティspawnして返す。
+/// 呼び出し側は`.with_children(...)`で中身を足し、必要なら`.insert(...)`で
+/// 画面を区別するマーカーComponentを追加する。
+///
+/// ```ignore
+/// spawn_modal_panel(&mut commands, GutzModalPanelStyle::default())
+///     .insert(ScreenUi)
+///     .with_children(|root| {
+///         root.spawn((Text::new("PAUSED"), ...));
+///     });
+/// ```
+pub fn spawn_modal_panel<'a>(
+    commands: &'a mut Commands,
+    style: GutzModalPanelStyle,
+) -> EntityCommands<'a> {
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            flex_direction: FlexDirection::Column,
+            row_gap: style.row_gap,
+            ..default()
+        },
+        BackgroundColor(style.background),
+    ))
 }

@@ -17,12 +17,12 @@ mod config;
 mod map;
 mod source;
 
+use core::marker::PhantomData;
+
+use bevy::prelude::*;
 pub use config::{load_into, load_into_from_file};
 pub use map::{GutzAction, GutzActionState, GutzInputMap};
 pub use source::GutzInputSource;
-
-use bevy::prelude::*;
-use core::marker::PhantomData;
 
 use crate::lifecycle::GutzLifecycleState;
 

@@ -7,10 +7,11 @@
 //! 描画方式を問わない生データ（[`GutzAtlasFrame`]）を返し、実際にどう
 //! 描画するかは呼び出し側に委ねる。
 
-use bevy::prelude::*;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use bevy::prelude::*;
+use serde::Deserialize;
 
 /// マニフェストの読み込みが失敗しうる理由。`load_manifest`（システム）は
 /// これを`warn!`するだけなので今のところ内部限りだが、`GutzXxxError`
@@ -18,9 +19,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, thiserror::Error)]
 enum GutzAtlasLoadError {
     #[error("{path}を読み込めません: {source}")]
-    Read { path: PathBuf, #[source] source: std::io::Error },
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{path}のパースに失敗: {source}")]
-    Parse { path: PathBuf, #[source] source: toml::de::Error },
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 /// `atlas_build::AtlasManifest`と同じ形。ランタイム側は`toml`を直接読むだけ
@@ -81,8 +90,7 @@ impl GutzAtlasRegistry {
             return None;
         }
         let tile_u = 1.0 / entry.columns as f32;
-        let uv_rect =
-            Rect::new(index as f32 * tile_u, 0.0, (index as f32 + 1.0) * tile_u, 1.0);
+        let uv_rect = Rect::new(index as f32 * tile_u, 0.0, (index as f32 + 1.0) * tile_u, 1.0);
         let tile_w = entry.tile_width as f32;
         let tile_h = entry.tile_height as f32;
         let pixel_rect =
@@ -103,6 +111,12 @@ impl Plugin for GutzAtlasPlugin {
         app.init_resource::<GutzAtlasManifestPath>()
             .init_resource::<GutzAtlasRegistry>()
             .add_systems(Startup, load_manifest);
+
+        // `atlas`本体は描画方式を問わない設計を保つため、Sprite依存の
+        // 自動再生（GutzSpriteAnimation）は独立feature（atlas-sprite2d）
+        // 側にのみ存在する。
+        #[cfg(feature = "atlas-sprite2d")]
+        app.add_systems(Update, crate::atlas_sprite2d::drive_sprite_animation);
     }
 }
 
@@ -112,7 +126,8 @@ fn read_manifest(manifest_dir: &Path) -> Result<AtlasManifest, GutzAtlasLoadErro
     let manifest_file = manifest_dir.join("manifest.toml");
     let contents = std::fs::read_to_string(&manifest_file)
         .map_err(|source| GutzAtlasLoadError::Read { path: manifest_file.clone(), source })?;
-    toml::from_str(&contents).map_err(|source| GutzAtlasLoadError::Parse { path: manifest_file, source })
+    toml::from_str(&contents)
+        .map_err(|source| GutzAtlasLoadError::Parse { path: manifest_file, source })
 }
 
 fn load_manifest(

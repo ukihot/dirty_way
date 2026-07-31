@@ -3,7 +3,11 @@ use bevy::prelude::*;
 
 /// カーソル位置から出るワールド空間のレイ。Avian3Dには依存しない純粋な
 /// Bevyのヘルパーで、grab/dragなどinteraction内の他機能からも使う。
-pub fn cursor_ray(camera: &Camera, camera_transform: &GlobalTransform, window: &Window) -> Option<Ray3d> {
+pub fn cursor_ray(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    window: &Window,
+) -> Option<Ray3d> {
     let cursor_pos = window.cursor_position()?;
     camera.viewport_to_world(camera_transform, cursor_pos).ok()
 }

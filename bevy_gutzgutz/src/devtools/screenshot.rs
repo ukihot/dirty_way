@@ -1,6 +1,7 @@
-use bevy::prelude::*;
-use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 use super::GutzDevtoolsSettings;
 

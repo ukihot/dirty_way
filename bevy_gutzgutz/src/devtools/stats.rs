@@ -1,5 +1,6 @@
-use bevy::prelude::*;
 use std::collections::HashMap;
+
+use bevy::prelude::*;
 
 /// 任意のゲームがdevtoolsオーバーレイに行を追加できる汎用チャンネル。
 /// ゲーム側は`set`で値を登録するだけで、表示方法（現在はegui、将来

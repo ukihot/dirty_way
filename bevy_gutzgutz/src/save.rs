@@ -16,9 +16,10 @@
 //! という一往復だけをgutzgutzに任せる。フォーマットはTOML（人間が読み書き
 //! しやすい）。
 
-use bevy::prelude::*;
 use core::marker::PhantomData;
 use std::path::{Path, PathBuf};
+
+use bevy::prelude::*;
 
 /// 保存/読み込みが失敗しうる理由を型で分ける。[`GutzLoadFailed`]がこれを
 /// そのまま運ぶため、ゲーム側が「ファイルが無いだけ（初回起動）」と
@@ -30,11 +31,23 @@ pub enum GutzSaveError {
     #[error("failed to deserialize save data: {0}")]
     Deserialize(#[from] toml::de::Error),
     #[error("failed to create directory {path}: {source}")]
-    CreateDir { path: PathBuf, #[source] source: std::io::Error },
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to write {path}: {source}")]
-    Write { path: PathBuf, #[source] source: std::io::Error },
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to read {path}: {source}")]
-    Read { path: PathBuf, #[source] source: std::io::Error },
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     /// OS標準のセーブ場所（[`GutzSavePlugin::standard_location`]）を解決
     /// できなかった。カレントディレクトリ等への自動フォールバックは
     /// **しない**——チーム開発やCIでは作業ディレクトリがユーザーの期待する
@@ -84,7 +97,10 @@ fn load_from_disk<T: GutzSaveData>(path: &Path) -> Result<T, GutzSaveError> {
 /// }
 /// impl GutzSaveData for SaveData {}
 /// ```
-pub trait GutzSaveData: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static {}
+pub trait GutzSaveData:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
+}
 
 impl<T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static> GutzSaveData for T {}
 
@@ -199,7 +215,8 @@ impl<T: GutzSaveData> GutzSavePlugin<T> {
     /// 作法が違う——自前で分岐を書かず、確立されたcrateに委ねる：
     ///
     /// - Windows: `%APPDATA%\{organization}\{application}\data\{file_name}`
-    /// - macOS: `~/Library/Application Support/{qualifier}.{organization}.{application}/{file_name}`
+    /// - macOS: `~/Library/Application
+    ///   Support/{qualifier}.{organization}.{application}/{file_name}`
     /// - Linux: `$XDG_DATA_HOME`（未設定なら`~/.local/share`）
     ///   `/{application}/{file_name}`
     ///
@@ -253,7 +270,10 @@ mod tests {
     #[derive(Resource, Default)]
     struct CapturedLoad(Option<TestData>);
 
-    fn capture_load(mut reader: MessageReader<GutzLoaded<TestData>>, mut captured: ResMut<CapturedLoad>) {
+    fn capture_load(
+        mut reader: MessageReader<GutzLoaded<TestData>>,
+        mut captured: ResMut<CapturedLoad>,
+    ) {
         for GutzLoaded(data) in reader.read() {
             captured.0 = Some(*data);
         }
@@ -340,7 +360,10 @@ mod tests {
             .add_message::<GutzLoadRequest<TestData>>()
             .add_message::<GutzLoaded<TestData>>()
             .add_message::<GutzLoadFailed<TestData>>()
-            .add_systems(Update, (handle_save_requests::<TestData>, handle_load_requests::<TestData>));
+            .add_systems(
+                Update,
+                (handle_save_requests::<TestData>, handle_load_requests::<TestData>),
+            );
 
         app.world_mut().write_message(GutzSaveRequest(TestData { value: 1 }));
         app.update();

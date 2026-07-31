@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 use bevy_gutzgutz::devtools::GutzDebugStats;
 use bevy_gutzgutz::lifecycle::{GutzPaused, in_game};
-use bevy_gutzgutz::ui::{GutzUiScreenClosed, GutzUiScreenOpened, GutzUiStack};
+use bevy_gutzgutz::ui::{
+    GutzModalPanelStyle, GutzUiScreenClosed, GutzUiScreenOpened, GutzUiStack, spawn_modal_panel,
+};
 
 use crate::bubble::FoamGpuBinding;
 use crate::quality::FoamQualitySetting;
@@ -177,55 +179,33 @@ fn despawn_screen_ui(
 }
 
 fn spawn_title_ui(commands: &mut Commands, save_data: &SaveData) {
-    commands
-        .spawn((
-            ScreenUi,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(12.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.05, 0.05, 0.08)),
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Text::new("D WAY"),
-                TextFont { font_size: FontSize::Px(64.0), ..default() },
-                TextColor(Color::srgb(0.3, 0.85, 1.0)),
-            ));
-            root.spawn((
-                Text::new(format!("High Score: {}", save_data.high_score)),
-                TextFont { font_size: FontSize::Px(20.0), ..default() },
-                TextColor(Color::srgb(1.0, 0.85, 0.4)),
-            ));
-            root.spawn((
-                Text::new("Press R to Start"),
-                TextFont { font_size: FontSize::Px(20.0), ..default() },
-                TextColor(Color::srgb(0.8, 0.8, 0.8)),
-            ));
-        });
+    spawn_modal_panel(
+        commands,
+        GutzModalPanelStyle { background: Color::srgb(0.05, 0.05, 0.08), ..default() },
+    )
+    .insert(ScreenUi)
+    .with_children(|root| {
+        root.spawn((
+            Text::new("D WAY"),
+            TextFont { font_size: FontSize::Px(64.0), ..default() },
+            TextColor(Color::srgb(0.3, 0.85, 1.0)),
+        ));
+        root.spawn((
+            Text::new(format!("High Score: {}", save_data.high_score)),
+            TextFont { font_size: FontSize::Px(20.0), ..default() },
+            TextColor(Color::srgb(1.0, 0.85, 0.4)),
+        ));
+        root.spawn((
+            Text::new("Press R to Start"),
+            TextFont { font_size: FontSize::Px(20.0), ..default() },
+            TextColor(Color::srgb(0.8, 0.8, 0.8)),
+        ));
+    });
 }
 
 fn spawn_paused_ui(commands: &mut Commands) {
-    commands
-        .spawn((
-            ScreenUi,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(12.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
-        ))
-        .with_children(|root| {
+    spawn_modal_panel(commands, GutzModalPanelStyle::default()).insert(ScreenUi).with_children(
+        |root| {
             root.spawn((
                 Text::new("PAUSED"),
                 TextFont { font_size: FontSize::Px(48.0), ..default() },
@@ -241,44 +221,36 @@ fn spawn_paused_ui(commands: &mut Commands) {
                 TextFont { font_size: FontSize::Px(20.0), ..default() },
                 TextColor(Color::srgb(0.8, 0.8, 0.8)),
             ));
-        });
+        },
+    );
 }
 
 fn spawn_game_over_ui(commands: &mut Commands, score: &Score, save_data: &SaveData) {
-    commands
-        .spawn((
-            ScreenUi,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(12.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Text::new("GAME OVER"),
-                TextFont { font_size: FontSize::Px(56.0), ..default() },
-                TextColor(Color::srgb(1.0, 0.4, 0.5)),
-            ));
-            root.spawn((
-                Text::new(format!("Score: {}", score.0)),
-                TextFont { font_size: FontSize::Px(28.0), ..default() },
-                TextColor(Color::WHITE),
-            ));
-            root.spawn((
-                Text::new(format!("High Score: {}", save_data.high_score)),
-                TextFont { font_size: FontSize::Px(20.0), ..default() },
-                TextColor(Color::srgb(1.0, 0.85, 0.4)),
-            ));
-            root.spawn((
-                Text::new("Press R to Restart"),
-                TextFont { font_size: FontSize::Px(20.0), ..default() },
-                TextColor(Color::srgb(0.8, 0.8, 0.8)),
-            ));
-        });
+    spawn_modal_panel(
+        commands,
+        GutzModalPanelStyle { background: Color::srgba(0.0, 0.0, 0.0, 0.55), ..default() },
+    )
+    .insert(ScreenUi)
+    .with_children(|root| {
+        root.spawn((
+            Text::new("GAME OVER"),
+            TextFont { font_size: FontSize::Px(56.0), ..default() },
+            TextColor(Color::srgb(1.0, 0.4, 0.5)),
+        ));
+        root.spawn((
+            Text::new(format!("Score: {}", score.0)),
+            TextFont { font_size: FontSize::Px(28.0), ..default() },
+            TextColor(Color::WHITE),
+        ));
+        root.spawn((
+            Text::new(format!("High Score: {}", save_data.high_score)),
+            TextFont { font_size: FontSize::Px(20.0), ..default() },
+            TextColor(Color::srgb(1.0, 0.85, 0.4)),
+        ));
+        root.spawn((
+            Text::new("Press R to Restart"),
+            TextFont { font_size: FontSize::Px(20.0), ..default() },
+            TextColor(Color::srgb(0.8, 0.8, 0.8)),
+        ));
+    });
 }

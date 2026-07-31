@@ -45,6 +45,7 @@
 //! `bevy_gutzgutz::steam::sdk`（`bevy-steamworks`の再エクスポート）経由で
 //! `Res<sdk::Client>`を直接使う。
 
+use bevy::prelude::*;
 /// `bevy-steamworks`（ひいてはその先の`steamworks`クレート）への窓口。
 /// 実績・統計・リーダーボード・フレンド等、gutzgutzが個別にラップしない
 /// Steam APIはすべてここ経由で使う。
@@ -53,8 +54,6 @@
 /// `init_app`が返す`Result`を`unwrap`する設計のため、Steam未接続の環境で
 /// ゲームごとパニックする。必ず[`GutzSteamPlugin`]経由で初期化する。
 pub use bevy_steamworks as sdk;
-
-use bevy::prelude::*;
 
 /// Steamへの接続状態。ゲーム側はこれを見て、実績解除・フレンド表示といった
 /// 「Steamが前提の機能」を出し分ける。`Unavailable`でもゲーム自体は
@@ -95,9 +94,7 @@ impl Plugin for GutzSteamPlugin {
                 app.add_plugins(plugin).insert_resource(GutzSteamStatus::Connected);
             }
             Err(err) => {
-                warn!(
-                    "Steamworks SDKの初期化に失敗したため、Steam機能なしで続行します: {err:?}"
-                );
+                warn!("Steamworks SDKの初期化に失敗したため、Steam機能なしで続行します: {err:?}");
                 app.insert_resource(GutzSteamStatus::Unavailable);
             }
         }

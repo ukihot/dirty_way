@@ -1,6 +1,6 @@
 use avian2d::prelude::*;
-use bevy::camera::ScalingMode;
 use bevy::prelude::*;
+use bevy_gutzgutz::camera::{GutzCameraFit2d, spawn_fit_camera_2d};
 
 use crate::consts::{ARENA_RADIUS, GameLayer};
 
@@ -23,21 +23,21 @@ impl Plugin for ScenePlugin {
 fn setup_scene(mut commands: Commands) {
     // カメラ：ハンドソープ筐体を真横から見た固定アングル（doc/soap-model.md
     // 2026-07-29追記：3Dトップダウンから2Dサイドビューへ方針転換）。
-    // AutoMinで床の全幅＋弾道の山なりが常に画面に収まるようにする。
+    // AutoMinで床の全幅＋弾道の山なりが常に画面に収まるようにする
+    // （フレーミング自体はbevy_gutzgutz::cameraへ委譲。ARENA_RADIUSから
+    // 決まる大きさ・オフセットはこのゲーム固有の値なのでここで渡す）。
     // Msaa::Off: soap.rs のカスタムメタボール描画パイプラインをMSAA非対応の
-    // 単純な構成にするため、このゲームでは常時オフにする。
-    commands.spawn((
-        Camera2d,
-        Msaa::Off,
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::AutoMin {
-                min_width: ARENA_RADIUS * 2.3,
-                min_height: ARENA_RADIUS * 1.5,
-            },
-            ..OrthographicProjection::default_2d()
-        }),
-        Transform::from_xyz(0.0, ARENA_RADIUS * 0.35, 0.0),
-    ));
+    // 単純な構成にするため、このゲームでは常時オフにする（カメラの
+    // フレーミングとは無関係な、このゲーム固有の描画都合なのでここで挿入する）。
+    let camera = spawn_fit_camera_2d(
+        &mut commands,
+        GutzCameraFit2d {
+            min_width: ARENA_RADIUS * 2.3,
+            min_height: ARENA_RADIUS * 1.5,
+            offset: Vec2::new(0.0, ARENA_RADIUS * 0.35),
+        },
+    );
+    commands.entity(camera).insert(Msaa::Off);
 
     // 床（物理コライダー + 見た目のSprite）。Y=0を通る無限平面コライダーの
     // 上面がちょうどY=0に来るよう、見た目はその下に厚みを足して配置する。

@@ -12,14 +12,14 @@
 mod context;
 mod pause;
 
+use core::marker::PhantomData;
+
+use bevy::prelude::*;
 pub use context::{
     GutzExecutionContext, GutzExecutionContextChanged, GutzLifecycleState, OnEnterContext,
     OnExitContext, in_context, in_game, out_game,
 };
 pub use pause::{GutzPaused, not_paused, paused};
-
-use bevy::prelude::*;
-use core::marker::PhantomData;
 
 /// ゲーム固有のState型`S`を1つ受け取り、そのライフサイクル管理一式を配線する
 /// プラグイン。ゲーム側は`S`に[`GutzLifecycleState`]を実装した上で、

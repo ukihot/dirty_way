@@ -289,25 +289,37 @@ Avian3D自身のAPI（bitset的な型）であり、そこに既定値を与え�
 禁じた「Avian3D APIそのもののラップ」に踏み込みかねない。ゲーム側が
 Avian3Dの`PhysicsLayer`を都度直接定義する（現状のdirty_wayと同じ）方針とする。
 
-## 7. その他プラグイン（将来スコープ・Phase分け）
+## 7. その他プラグイン（Phase分け・2026-07-30時点の実装状況）
 
 `GutzInputPlugin` / `GutzUiPlugin` / `GutzSavePlugin` / `GutzAudioPlugin` /
-`GutzCameraPlugin` / `GutzSteamPlugin` はユーザー提示コードにある将来構想。
-現時点の`dirty_way`にはまだ該当する共通化対象コードが存在しない（各機能を
-0から作ってから初めて「複数作品で共通化する価値があるか」判断できる）ため、
-Phase分けしてロードマップとして要件だけ明記し、実装は後回しにする。
+`GutzCameraPlugin` / `GutzSteamPlugin`は、当初はユーザー提示コードにある
+将来構想としてPhase分けし、実装を後回しにする計画だった。
 
-| Phase | 内容 | 着手条件 |
+**2026-07-30追記**：以下の表は当初のPhase計画であり、`GutzAudioPlugin`を
+除いて全て実装済み。特にPhase 3（`GutzCameraPlugin`）は当初「2作目の企画で
+dirty_wayと異なる操作方式が出た時点」まで待つ計画だったが、gutzgutzが
+今後多数の2Dアーケードゲームを量産する土台になる方針が明確になったため、
+1作目（dirty_way）の実装のみを根拠に前倒しで実装した（詳細は
+[bevy_gutzgutz/README.md](../bevy_gutzgutz/README.md)の該当節参照）。
+`GutzInteractionPlugin`はgutzgutz側は実装済みだが、dirty_wayがまだ
+raycast/grab/explosion系の操作を必要としていないため有効化していない
+（`dirty_way/Cargo.toml`のコメント参照）——「実装済みだが未使用」は
+「未実装」とは別の状態として区別しておく。
+
+| Phase | 内容 | 状況 |
 |---|---|---|
-| 0 | gutzgutzリポジトリ新設・ワークスペース設計・feature骨組み | 今すぐ（本要件定義の直後） |
-| 1 | `GutzDevtoolsPlugin`（FPS/Physics Debug/Time Scale/Screenshot/God Mode/統計チャンネル） | dirty_wayの`ui.rs`から移設可能な部分がすでにある |
-| 2 | `GutzInteractionPlugin`（raycast/grab/explosion/impulse） | dirty_wayに2つ目の物理インタラクションが必要になった時点 |
-| 3 | `GutzInputPlugin`（キーバインド抽象化）, `GutzCameraPlugin` | 2作目の企画でdirty_wayと異なる操作方式が出た時点 |
-| 4 | `GutzUiPlugin`（共通UI部品）, `GutzSavePlugin`, `GutzAudioPlugin` | セーブ／サウンドが必要なゲームが出た時点 |
-| 5 | `GutzSteamPlugin` | Steamリリースが具体化した時点 |
+| 0 | gutzgutzリポジトリ新設・ワークスペース設計・feature骨組み | ✅ 完了 |
+| 1 | `GutzDevtoolsPlugin`（FPS/Physics Debug/Time Scale/Screenshot/God Mode/統計チャンネル） | ✅ 完了・dirty_wayで使用中 |
+| 2 | `GutzInteractionPlugin`（raycast/grab/explosion/impulse） | ✅ gutzgutz側は実装済み。dirty_wayはまだ未使用（該当する操作が無いため） |
+| 3 | `GutzInputPlugin`（キーバインド抽象化）, `GutzCameraPlugin` | ✅ 完了・dirty_wayで使用中（`GutzCameraPlugin`は前倒し実装、上記追記参照） |
+| 4 | `GutzUiPlugin`（共通UI部品）, `GutzSavePlugin`, `GutzAudioPlugin` | `GutzUiPlugin`・`GutzSavePlugin`は✅完了・使用中。`GutzAudioPlugin`は未着手（`audio` featureは空の骨組みのみ） |
+| 5 | `GutzSteamPlugin` | ✅ 完了・dirty_wayで使用中（開発中はDEV_APP_IDでグレースフルデグレード確認済み） |
 
-Phase 0-1は"今すぐやる価値がある"部分、Phase 2以降は"2作目以降で初めて
-共通化の判断材料が揃う"部分として区別しておく（早すぎる抽象化を避ける）。
+以下は当初のPhase計画時点の記述（歴史的経緯として残す）：Phase 0-1は
+"今すぐやる価値がある"部分、Phase 2以降は"2作目以降で初めて共通化の
+判断材料が揃う"部分として区別する計画だった。実際にはPhase 1完了後、
+2作目を待たずにPhase 2〜5の多くを1作目（dirty_way）の実装だけを根拠に
+前倒しで進めることになった。
 
 ## 8. `dirty_way`側の対応
 

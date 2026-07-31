@@ -7,7 +7,12 @@ use super::impulse::apply_impulse;
 /// 応じて線形減衰する放射状の力積を与える。ゲーム側が対象を絞ったQuery
 /// （例：`Query<(&GlobalTransform, Forces), With<RigidBody>>`）を渡すことで、
 /// 対象範囲はゲーム側が制御する。
-pub fn explode(bodies: &mut Query<(&GlobalTransform, Forces)>, center: Vec3, radius: f32, strength: f32) {
+pub fn explode(
+    bodies: &mut Query<(&GlobalTransform, Forces)>,
+    center: Vec3,
+    radius: f32,
+    strength: f32,
+) {
     for (transform, mut forces) in bodies.iter_mut() {
         let offset = transform.translation() - center;
         let distance = offset.length();

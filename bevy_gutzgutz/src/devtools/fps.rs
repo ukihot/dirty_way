@@ -5,8 +5,12 @@ use super::stats::GutzDebugStats;
 
 /// FPS/Frame Timeを標準エントリとして`GutzDebugStats`へ毎フレーム`set`する。
 /// `FrameTimeDiagnosticsPlugin`自体は`GutzDevtoolsPlugin`が追加する。
-pub(crate) fn update_fps_stats(diagnostics: Res<DiagnosticsStore>, mut stats: ResMut<GutzDebugStats>) {
-    let fps = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
+pub(crate) fn update_fps_stats(
+    diagnostics: Res<DiagnosticsStore>,
+    mut stats: ResMut<GutzDebugStats>,
+) {
+    let fps =
+        diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     let frame_ms = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
         .and_then(|d| d.smoothed())

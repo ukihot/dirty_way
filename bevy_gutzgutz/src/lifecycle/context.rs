@@ -2,7 +2,8 @@ use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
 /// ゲームの実行コンテキストの大分類。個々のゲームがどんな具体的な`States`型
-/// （Title/Playing/Pause、あるいはPlaying/GameOverのような2値でも）を持っていても、
+/// （Title/Playing/Pause、あるいはPlaying/
+/// GameOverのような2値でも）を持っていても、
 /// 必ずこの2つのどちらかに分類できる、という前提に立つ。
 ///
 /// gutzgutzはこの列挙型そのものは提供するが、「ゲームのどのStateがどちらに
@@ -83,7 +84,8 @@ pub struct GutzExecutionContextChanged {
 /// 場合（例：Title・GameOverが両方OutGame）に「OutGameになった瞬間」へ
 /// フックしたいことがあるため、コンテキスト単位のOnEnter/OnExit相当の
 /// スケジュールを別途用意する。ゲーム側は通常のOnEnter/OnExitと同じ要領で
-/// `app.add_systems(OnEnterContext(GutzExecutionContext::InGame), ...)`のように使う。
+/// `app.add_systems(OnEnterContext(GutzExecutionContext::InGame),
+/// ...)`のように使う。
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OnEnterContext(pub GutzExecutionContext);
 

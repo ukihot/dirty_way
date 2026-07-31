@@ -23,7 +23,16 @@ Bevy/Avian3D本体を隠したりラップしたりしない。ゲームのア�
 Yesならgutzgutz行き、ゲーム固有のドメインロジック（dirty_wayで言えば
 泡・敵・チャージ）はゲーム側に残す。1作目で一度しか使っていないコードを、
 将来の可能性だけで抽象化することもしない——抽象化は「もう一度同じものを
-書いた」瞬間に行う。
+書いた」瞬間に行う、というのが原則。
+
+**2026-07-30追記**：`camera`/`atlas-sprite2d`の2つだけは、この原則を
+意図的に前倒しで上書きした——gutzgutzが今後多数の2Dアーケードゲーム
+（ホラー・物理シミュレーション・レース・タワーディフェンス・パズル等）を
+量産する土台になる方針が明確になったため、1作目の実装のみを根拠に
+先行抽出している（詳細は各featureの節参照）。逆に、同じタイミングで
+「まだ抽象化すべきでない」と判断した`dirty_way`側のコード（品質設定の
+tier切り替え・泡の積み上げ物理）はそのまま手を付けていない——原則自体を
+撤回したわけではなく、個別に判断した2件だけの例外。
 
 ## リポジトリ構成（現状）
 
@@ -226,9 +235,30 @@ fn spawn_knight(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
 （マクロで`texture名`を型として持たせる等）が要り、v1のスコープ外とする。
 
 **スコープ外**：アトラスパイプラインに乗らない任意画像の動的ロード
-（MOD・ユーザーコンテンツ等、`AssetServer`を直接使う）、アニメーション
-再生（どのフレームを今表示するかのタイミング制御）。後者は2作目以降で
-同じロジックが必要になってから`GutzSpriteAnimation`的な形で追加を検討する。
+（MOD・ユーザーコンテンツ等、`AssetServer`を直接使う）。
+
+**2026-07-30追記**：アニメーション再生（どのフレームを今表示するかの
+タイミング制御）は、当初「2作目以降で同じロジックが必要になってから
+`GutzSpriteAnimation`的な形で追加を検討する」としていたが、gutzgutzが
+今後多数の2Dアーケードゲーム（ホラー・物理シミュレーション・レース・
+タワーディフェンス・パズル等）を量産する土台になる方針が明確になった
+ため、dirty_wayでの最初の実装（`enemy.rs`の`WalkAnimation`）を機に前倒しで
+`atlas-sprite2d` featureとして抽出した。`atlas`本体は描画方式（2D Sprite /
+3DメッシュのUVオフセット）を問わない設計のまま維持し、`Sprite`への依存
+（`GutzSpriteAnimation`とその駆動システム）だけを独立featureへ分離している
+——3Dゲーム等`Sprite`を使わない消費側は`atlas`のみ有効化すれば
+`bevy_sprite`への依存は発生しない。
+
+```rust
+// GutzSpriteAnimation を Sprite と同じ Entity へ insert するだけで、
+// GutzAtlasPlugin（atlas-sprite2d有効時）が毎フレーム Sprite.rect を
+// 自動更新する。フレーム数はマニフェスト（GutzAtlasRegistry）から
+// 自動で引くため、呼び出し側では持たない。
+commands.spawn((
+    Sprite { image: frame.image, rect: Some(frame.pixel_rect), ..default() },
+    GutzSpriteAnimation::new("knight/walk", 0.1), // 名前, 1フレームあたりの秒数
+));
+```
 
 ### `lifecycle` — `GutzLifeCyclePlugin<S>`
 
@@ -315,6 +345,20 @@ enum UiScreen { GameOver }
 app.add_plugins(GutzUiPlugin::<UiScreen>::default());
 // OnEnter(GameState::GameOver) で stack.push(UiScreen::GameOver) するだけ。
 // 実際のUIスポーンはGutzUiScreenOpened<UiScreen>を購読して行う。
+```
+
+`GutzUiStack`とは独立に、Title/Pause/GameOverのようなモーダル画面が
+共通して持つ「全画面・中央寄せ・縦積み・背景オーバーレイ」の枠だけを
+組み立てる`spawn_modal_panel`も同じfeatureに含む（ゲージ・ダイアログ等の
+**部品**はスコープ内、ゲーム固有のHUD構成そのものはスコープ外という
+方針のまま。中身の`Text`はゲーム側が`.with_children`で足す）：
+
+```rust
+spawn_modal_panel(&mut commands, GutzModalPanelStyle::default())
+    .insert(ScreenUi) // ゲーム側のマーカーComponent
+    .with_children(|root| {
+        root.spawn((Text::new("PAUSED"), ...));
+    });
 ```
 
 ### `save` — `GutzSavePlugin<T>`
@@ -421,11 +465,66 @@ Steamクライアント自体が起動していない・ログインしていな
 Steamworksダッシュボード操作）にはSteamworksパートナーアカウントが
 別途必要だが、それはこのfeatureを有効化する条件ではない。
 
-### `audio` / `camera` — 未着手
+### `pacing` — `GutzRampTimer`
+
+一定間隔で発火する周期タイマーで、経過時間に応じて間隔自体が線形に
+ランプ（変化）していく。ホラー/タワーディフェンス/パズルのような、
+波状に敵・イベントを発生させるゲームで繰り返し必要になる想定。
+`Resource`/`Component`/`Plugin`は持たない——`bevy::time::Timer`と同じ
+「素材」の位置づけで、ゲーム側が自分のResource/Componentに埋め込んで使う。
+
+```rust
+#[derive(Resource)]
+struct EnemySpawnTimer(GutzRampTimer);
+
+impl Default for EnemySpawnTimer {
+    fn default() -> Self {
+        // 開始間隔1.6秒 → 下限0.45秒まで、1秒あたり0.01ずつ短縮。
+        Self(GutzRampTimer::new(1.6, 0.45, 0.01))
+    }
+}
+
+fn spawn_enemies(time: Res<Time>, mut timer: ResMut<EnemySpawnTimer>, /* ... */) {
+    if !timer.0.tick(time.delta()) { return; }
+    // 発火した——ここで実際のスポーン処理。
+}
+```
+
+`ramp_per_sec`に`0.0`（`start == min`）を渡せば、ランプなしの固定間隔
+クールダウンとしても使える。dirty_wayの`enemy.rs`（ランプあり）と
+`player.rs`のノズル連射クールダウン（ランプなし）で、同じ「周期的に
+再アームされるタイマー」パターンが独立に2箇所書かれていたのを機に抽出した。
+
+### `camera` — `GutzCameraPlugin` / `spawn_fit_camera_2d`
+
+ワールド空間の矩形領域を少なくとも画面に収める2Dカメラのセットアップ。
+`Camera2d`/`OrthographicProjection`自体はラップしない——「最低でもこの
+ワールド幅×高さを画面に収める（`ScalingMode::AutoMin`）」という、2Dの
+アリーナ・トラック・盤面を持つゲームで繰り返し必要になるボイラープレート
+だけを引き受ける。`GutzCameraPlugin`自体は骨組みのまま（何もしない）で、
+実体は自由関数`spawn_fit_camera_2d`。
+
+```rust
+let camera = spawn_fit_camera_2d(&mut commands, GutzCameraFit2d {
+    min_width: 36.8,
+    min_height: 24.0,
+    offset: Vec2::new(0.0, 5.6),
+});
+// ゲーム固有の追加設定（描画パイプラインの都合によるMsaa::Off等）は
+// 呼び出し側が別途 .insert する。
+commands.entity(camera).insert(Msaa::Off);
+```
+
+**2026-07-30追記**：当初「dirty_wayと異なるカメラ制御を要求する2作目が
+出てから中身を詰める」としていたが、`atlas-sprite2d`と同じ理由
+（複数ジャンルのゲームを量産する前提が明確になったこと）で、dirty_wayの
+`scene.rs`にあったカメラセットアップを機に前倒しで実装した。
+
+### `audio` — 未着手
 
 現時点では`dirty_way`にまだ該当する共通化対象コードが存在しないため、
 「何もしないが`app.add_plugins(...)`で差し込める」骨組みだけを用意して
-ある。実際にサウンド・カメラ制御が必要なゲームが出てから中身を詰める。
+ある。実際にサウンドが必要なゲームが出てから中身を詰める。
 
 ## 非機能要件
 

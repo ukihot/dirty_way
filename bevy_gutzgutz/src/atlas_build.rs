@@ -32,9 +32,10 @@
 //! （leafかnamespaceかが曖昧になるため）。png以外のファイルが混じっている
 //! こともエラーになる。
 
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 /// `pack`が失敗しうる理由。CONTRIBUTION.mdの方針どおり、`String`で
 /// その場限りのメッセージを組み立てるのではなく型で分ける。`Display`
@@ -43,10 +44,18 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, thiserror::Error)]
 pub enum GutzAtlasBuildError {
     #[error("{path}を読み取れません: {source}")]
-    ReadDir { path: PathBuf, #[source] source: std::io::Error },
+    ReadDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{dir}の走査に失敗: {source}")]
-    ReadEntry { dir: PathBuf, #[source] source: std::io::Error },
+    ReadEntry {
+        dir: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{path}: png以外のファイルが混じっています")]
     UnexpectedFile { path: PathBuf },
@@ -94,19 +103,35 @@ pub enum GutzAtlasBuildError {
     },
 
     #[error("{path}: 読み込みに失敗: {source}")]
-    OpenImage { path: PathBuf, #[source] source: image::ImageError },
+    OpenImage {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
 
     #[error("{path}の書き込みに失敗: {source}")]
-    SaveImage { path: PathBuf, #[source] source: image::ImageError },
+    SaveImage {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
 
     #[error("{path}を作成できません: {source}")]
-    CreateDir { path: PathBuf, #[source] source: std::io::Error },
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("マニフェストのシリアライズに失敗: {0}")]
     SerializeManifest(#[from] toml::ser::Error),
 
     #[error("{path}の書き込みに失敗: {source}")]
-    WriteManifest { path: PathBuf, #[source] source: std::io::Error },
+    WriteManifest {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{src_dir}: 命名規約に沿ったtextureフォルダが1つもありません")]
     NoTextures { src_dir: PathBuf },
@@ -141,7 +166,10 @@ pub struct AtlasEntry {
 /// 命名規約違反・番号の歯抜けや末尾欠け・番号の付け過ぎ・フレームサイズ
 /// 不一致は、どれも最初の1件で`Err`として返す。呼び出し側の`build.rs`は
 /// これを`cargo::error=`として出力し、ビルドを止めることを想定している。
-pub fn pack(src_dir: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<(), GutzAtlasBuildError> {
+pub fn pack(
+    src_dir: impl AsRef<Path>,
+    out_dir: impl AsRef<Path>,
+) -> Result<(), GutzAtlasBuildError> {
     let src_dir = src_dir.as_ref();
     let out_dir = out_dir.as_ref();
 
@@ -228,8 +256,8 @@ fn list_dir(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), GutzAtlasBuildEr
     let mut png_files = Vec::new();
     let mut subdirs = Vec::new();
     for entry in read_dir {
-        let entry =
-            entry.map_err(|source| GutzAtlasBuildError::ReadEntry { dir: dir.to_path_buf(), source })?;
+        let entry = entry
+            .map_err(|source| GutzAtlasBuildError::ReadEntry { dir: dir.to_path_buf(), source })?;
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
@@ -308,7 +336,10 @@ fn parse_frame_file_name(file_name: &str) -> Option<u32> {
     Some(index)
 }
 
-fn pack_one(group: &TextureGroup, out_dir: &Path) -> Result<(String, AtlasEntry), GutzAtlasBuildError> {
+fn pack_one(
+    group: &TextureGroup,
+    out_dir: &Path,
+) -> Result<(String, AtlasEntry), GutzAtlasBuildError> {
     let texture_name = group.segments.join("/");
 
     let by_index = index_files(&texture_name, group)?;

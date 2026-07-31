@@ -1,13 +1,16 @@
 //! gutzgutz — 自社ゲーム開発共通基盤（README.md）。
 //!
 //! Bevy/Avian3D本体はラップしない。複数のゲームで繰り返し使うことになる
-//! 「便利機能」「開発基盤」だけを、Cargo feature単位のプラグインとして提供する。
-//! ゲーム側はAvian3D・Bevyを直接使ってよい。
+//! 「便利機能」「開発基盤」だけを、Cargo
+//! feature単位のプラグインとして提供する。 ゲーム側はAvian3D・
+//! Bevyを直接使ってよい。
 
 #[cfg(feature = "atlas")]
 pub mod atlas;
 #[cfg(feature = "atlas-build")]
 pub mod atlas_build;
+#[cfg(feature = "atlas-sprite2d")]
+pub mod atlas_sprite2d;
 #[cfg(feature = "devtools")]
 pub mod devtools;
 #[cfg(feature = "interaction")]
@@ -21,6 +24,8 @@ pub mod audio;
 pub mod camera;
 #[cfg(feature = "input")]
 pub mod input;
+#[cfg(feature = "pacing")]
+pub mod pacing;
 #[cfg(feature = "save")]
 pub mod save;
 #[cfg(feature = "steam")]
@@ -33,19 +38,22 @@ pub mod ui;
 pub mod prelude {
     #[cfg(feature = "atlas")]
     pub use crate::atlas::*;
-    #[cfg(feature = "devtools")]
-    pub use crate::devtools::*;
-    #[cfg(feature = "interaction")]
-    pub use crate::interaction::*;
-    #[cfg(feature = "lifecycle")]
-    pub use crate::lifecycle::*;
-
+    #[cfg(feature = "atlas-sprite2d")]
+    pub use crate::atlas_sprite2d::*;
     #[cfg(feature = "audio")]
     pub use crate::audio::*;
     #[cfg(feature = "camera")]
     pub use crate::camera::*;
+    #[cfg(feature = "devtools")]
+    pub use crate::devtools::*;
     #[cfg(feature = "input")]
     pub use crate::input::*;
+    #[cfg(feature = "interaction")]
+    pub use crate::interaction::*;
+    #[cfg(feature = "lifecycle")]
+    pub use crate::lifecycle::*;
+    #[cfg(feature = "pacing")]
+    pub use crate::pacing::*;
     #[cfg(feature = "save")]
     pub use crate::save::*;
     #[cfg(feature = "steam")]

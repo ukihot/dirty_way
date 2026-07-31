@@ -52,8 +52,23 @@ serde = { version = "1", features = ["derive"] }
 # 自社ゲーム開発共通基盤（bevy_gutzgutz/README.md）。interactionはdirty_way
 # にまだ対応する使い道がないため有効化しない（2作目で同じものが必要に
 # なってから）。atlasはbuild.rsが生成するassets/generated/atlas/を
-# GutzAtlasPluginが読む（ランタイム側）。
-bevy_gutzgutz = { path = "bevy_gutzgutz", features = ["devtools", "lifecycle", "input", "ui", "save", "steam", "atlas"] }
+# GutzAtlasPluginが読む（ランタイム側）。atlas-sprite2dは敵の歩行アニメ
+# （enemy.rs）、cameraはアリーナを画面に収めるカメラ設定（scene.rs）、
+# pacingは敵の出現間隔のランプ機構（enemy.rs）をそれぞれgutzgutzへ委譲した
+# ことで有効化（2026-07-30、複数ジャンルのゲームで再利用する前提での
+# 意図的な先行抽出。doc/gutzgutz-requirements.md参照）。
+bevy_gutzgutz = { path = "bevy_gutzgutz", features = [
+    "devtools",
+    "lifecycle",
+    "input",
+    "ui",
+    "save",
+    "steam",
+    "atlas",
+    "atlas-sprite2d",
+    "camera",
+    "pacing",
+] }
 
 [build-dependencies]
 # build.rsからassets/character/のアトラス生成（atlas_build::pack）を呼ぶ
