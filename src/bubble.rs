@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
 use avian2d::prelude::*;
@@ -97,17 +98,22 @@ pub struct FoamGpuBinding {
 /// エンティティ自身）が対応表を持つので、
 /// こちらは「今どのスロットが空いているか」
 /// だけを覚えていればよい（doc第31節）。
+///
+/// 課題S-39（2026-07-30）：`bindings`は発行順（古い→新しい）の台帳。
+/// 真の所有権はBubbleエンティティ側の`FoamGpuBinding`コンポーネントに
+/// あるが、ここでも複製を持つことで「最も古いBindingはどれか」を
+/// O(1)で追える。S-35で泡が時間経過で自然に消えなくなったことで、
+/// `quality.max_aggregates`（同時に見た目を持てる上限、Mediumで64等）に
+/// 一度でも達すると、以後ずっと新しい泡が見た目を持てなくなる
+/// バグを引き起こしていた（実機フィードバック：「SPACEキーを押しても
+/// 何もレンダリングされない」）。有限のGPU描画予算を「直近のN個」に
+/// 常に回し続けるため、上限到達時は最も古いBindingを追い出す
+/// （[`FoamSlotAllocator::evict_oldest`]）。
 #[derive(Resource)]
 pub struct FoamSlotAllocator {
     free_slots: Vec<u32>,
     next_generation: u32,
-    /// 現在FoamGpuBindingを持っているBubbleの数（＝スロットではなく
-    /// Aggregateの数）。1 Bubbleが`FOAM_SUB_INSTANCES`個のスロットを
-    /// まとめて使うようになったため、空きスロット数の逆算では
-    /// 「Bubble何個分か」が分からなくなった。`quality.max_aggregates`は
-    /// 「同時に見た目を持てるBubbleの上限」という意味なので、素直に
-    /// Bubble数そのものを数える。
-    active_bindings: u32,
+    bindings: VecDeque<(Entity, FoamGpuBinding)>,
 }
 
 impl Default for FoamSlotAllocator {
@@ -115,7 +121,7 @@ impl Default for FoamSlotAllocator {
         Self {
             free_slots: (0..FOAM_INSTANCE_POOL_SIZE).collect(),
             next_generation: 1,
-            active_bindings: 0,
+            bindings: VecDeque::new(),
         }
     }
 }
@@ -172,10 +178,17 @@ impl FoamSlotAllocator {
     /// （doc/soap-issues.md
     /// S-11a）。Poolの容量そのものは常に512のまま変えない。
     ///
-    /// `pub(crate)`：Bubble以外（player.rsのチャージ中プレビュー）からも
-    /// 同じスロットプールを間借りするため、クレート内には公開する。
-    pub(crate) fn allocate(&mut self, quality: FoamQualityProfile) -> Option<FoamGpuBinding> {
-        if self.active_bindings >= quality.max_aggregates {
+    /// `entity`はこのBindingを持つことになるBubble自身（`spawn_bubble`が
+    /// `commands.spawn(...)`直後の`Entity`を渡す）。台帳（`bindings`）に
+    /// 発行順で記録するため必要（S-39）。
+    ///
+    /// `pub(crate)`：クレート内の他モジュールからも呼べるよう公開する。
+    pub(crate) fn allocate(
+        &mut self,
+        quality: FoamQualityProfile,
+        entity: Entity,
+    ) -> Option<FoamGpuBinding> {
+        if self.bindings.len() as u32 >= quality.max_aggregates {
             return None;
         }
         // 課題S-30：実際に使うのは`active_count`（FOAM_CLUSTER_MIN〜MAX）
@@ -192,14 +205,31 @@ impl FoamSlotAllocator {
         }
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
-        self.active_bindings += 1;
         let (offsets, size_scales, active_count) = cluster_offsets();
-        Some(FoamGpuBinding { slots, offsets, size_scales, active_count, generation })
+        let binding = FoamGpuBinding { slots, offsets, size_scales, active_count, generation };
+        self.bindings.push_back((entity, binding));
+        Some(binding)
     }
 
-    pub fn release(&mut self, binding: &FoamGpuBinding) {
+    /// `entity`の見た目（GPUスロット）を明示的に手放す。台帳に無い
+    /// `entity`（そもそもBindingを持っていなかった・既に手放し済み）を
+    /// 渡しても無害（no-op）。despawn時に呼ぶ。
+    pub fn release(&mut self, entity: Entity) {
+        if let Some(pos) = self.bindings.iter().position(|(e, _)| *e == entity) {
+            let (_, binding) = self.bindings.remove(pos).expect("position was just found");
+            self.free_slots.extend_from_slice(&binding.slots);
+        }
+    }
+
+    /// 課題S-39：キャパシティが尽きている（`allocate`が`None`を返した）
+    /// ときに呼ぶ。最も古いBindingを台帳から取り除いてスロットを解放し、
+    /// そのEntityを返す——呼び出し側はこのEntityから`FoamGpuBinding`
+    /// コンポーネントを外す責務を持つ（台帳側は解放済みだが、Component側を
+    /// 外し忘れるとGPU側に古いBindingの内容が残り続けてしまう）。
+    fn evict_oldest(&mut self) -> Option<Entity> {
+        let (entity, binding) = self.bindings.pop_front()?;
         self.free_slots.extend_from_slice(&binding.slots);
-        self.active_bindings = self.active_bindings.saturating_sub(1);
+        Some(entity)
     }
 }
 
@@ -236,7 +266,7 @@ pub fn spawn_bubble(
     radius: f32,
     power: i32,
 ) {
-    let mut entity = commands.spawn((
+    let entity = commands.spawn((
         Bubble {
             power,
             life: 0.0,
@@ -291,10 +321,30 @@ pub fn spawn_bubble(
         LinearVelocity(velocity),
         Transform::from_translation(position.extend(0.0)),
     ));
-    // 品質上限に達している、またはプールが尽きていたら見た目（FoamGpuBinding）
-    // だけ諦める。ゲームロジックには影響しない。
-    if let Some(binding) = allocator.allocate(quality) {
-        entity.insert(binding);
+    let id = entity.id();
+
+    // 課題S-39（2026-07-30、実機フィードバック）：S-35で泡が時間経過で
+    // 自然に消えなくなったことで、quality上限（例：Mediumでmax_aggregates=64）
+    // に一度でも達すると、以後ずっと新しい泡が見た目（FoamGpuBinding）を
+    // 持てなくなっていた（「SPACEキーを押しても何もレンダリングされない」）。
+    // 上限到達時は最も古いBindingを1つ追い出してから再試行し、常に
+    // 「直近の泡」が見た目を持てるようにする（ゲームロジック＝物理・
+    // 当たり判定は見た目の有無に関わらず常に機能する）。
+    let binding = match allocator.allocate(quality, id) {
+        Some(binding) => Some(binding),
+        None => match allocator.evict_oldest() {
+            Some(evicted) => {
+                commands.entity(evicted).remove::<FoamGpuBinding>();
+                allocator.allocate(quality, id)
+            }
+            // プールの物理容量（FOAM_INSTANCE_POOL_SIZE）自体がFOAM_CLUSTER_MAX
+            // 未満まで断片化することは無いはずだが、万一Bindingが1つも
+            // 無いのに確保できない場合は見た目だけ諦める。
+            None => None,
+        },
+    };
+    if let Some(binding) = binding {
+        commands.entity(id).insert(binding);
     }
 }
 
@@ -368,19 +418,20 @@ fn settle_landed_bubbles(
             // なってしまう（実際の泡は下の泡に「フォスっ」と乗って高さを
             // 増していくはず）。LandedBubble同士も衝突対象に含め、既存の
             // 泡の上に乗ったまま支えられ続けるようにする。
+            //
+            // 課題S-38（2026-07-30）：ここで一時的に水平方向（X）の並進を
+            // lockする対策を入れていたが、これが新たなバグを生んだ——
+            // 2つの泡がX方向にも重なっている状態でXがlockされていると、
+            // 衝突ソルバーは重なりを解消する補正をY方向だけに集中させる
+            // しかなくなり、上の泡が垂直方向へ異常な速度で弾き飛ばされて
+            // 消えてしまっていた（実機確認）。lockそのものを撤去し、代わりに
+            // `main.rs`で`SolverConfig::max_overlap_solve_speed`をグローバルに
+            // 下げることで、重なりの解消自体を常に穏やかにする方針に変更した
+            // （詳細はmain.rsのコメント参照）。
             CollisionLayers::new(
                 GameLayer::LandedBubble,
                 [GameLayer::Floor, GameLayer::Bubble, GameLayer::LandedBubble],
             ),
-            // 実機フィードバック（2026-07-30）：着地済みの泡同士が衝突する
-            // ようになった（直上のコメント）ことで、新しい泡が横から
-            // ぶつかると既存の泡だまりが横に押しのけられてしまっていた。
-            // 実際の泡は横から押されて動くのではなく、境目がぷくっと
-            // 盛り上がって馴染むだけで、既に静止している泡の位置は
-            // 動かないはず。着地した瞬間、水平方向（X）の並進だけを
-            // ロックする——回転は元々ROTATION_LOCKEDのまま、垂直方向
-            // （Y）は支えを失えば落下し直せるようlockしない（課題S-27参照）。
-            LockedAxes::new().lock_translation_x().lock_rotation(),
         ));
     }
 }
@@ -399,15 +450,14 @@ fn tick_bubble_lifetime(time: Res<Time>, mut bubbles: Query<&mut Bubble>) {
 fn despawn_out_of_bounds(
     mut commands: Commands,
     mut allocator: ResMut<FoamSlotAllocator>,
-    bubbles: Query<(Entity, &Transform, Option<&FoamGpuBinding>), With<Bubble>>,
+    bubbles: Query<(Entity, &Transform), With<Bubble>>,
 ) {
-    for (entity, transform, binding) in &bubbles {
+    for (entity, transform) in &bubbles {
         if transform.translation.y < -5.0
             || transform.translation.length() > BUBBLE_DESPAWN_DISTANCE
         {
-            if let Some(binding) = binding {
-                allocator.release(binding);
-            }
+            // release()はBindingを持たないentityに対してはno-op（S-39）。
+            allocator.release(entity);
             commands.entity(entity).despawn();
         }
     }

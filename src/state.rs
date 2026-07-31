@@ -4,7 +4,7 @@ use bevy_gutzgutz::lifecycle::{GutzExecutionContext, GutzLifecycleState, GutzPau
 use bevy_gutzgutz::save::{GutzLoadRequest, GutzLoaded, GutzSaveRequest};
 
 use crate::actions::PlayerAction;
-use crate::bubble::{Bubble, FoamGpuBinding, FoamSlotAllocator};
+use crate::bubble::{Bubble, FoamSlotAllocator};
 use crate::consts::PLAYER_MAX_HEALTH;
 use crate::enemy::{Enemy, EnemySpawnTimer};
 use crate::player::NozzlePress;
@@ -106,7 +106,7 @@ fn reset_game(
     mut spawn_timer: ResMut<EnemySpawnTimer>,
     mut foam_allocator: ResMut<FoamSlotAllocator>,
     enemies: Query<Entity, With<Enemy>>,
-    bubbles: Query<(Entity, Option<&FoamGpuBinding>), With<Bubble>>,
+    bubbles: Query<Entity, With<Bubble>>,
 ) {
     score.0 = 0;
     *health = Health::default();
@@ -116,13 +116,13 @@ fn reset_game(
     for entity in &enemies {
         commands.entity(entity).despawn();
     }
-    for (entity, binding) in &bubbles {
-        // GPUスロットも解放する。世代カウンタ（FoamGpuBinding::generation）のおかげで、
-        // 再利用されたスロットにGPU側の古い変形状態が残っていても新規スポーンとして
-        // 正しく初期化し直される（doc/soap-issues.md S-10）。
-        if let Some(binding) = binding {
-            foam_allocator.release(binding);
-        }
+    for entity in &bubbles {
+        // GPUスロットも解放する（release()はBindingを持たないentityに
+        // 対してはno-op、S-39）。世代カウンタ（FoamGpuBinding::generation）
+        // のおかげで、再利用されたスロットにGPU側の古い変形状態が残って
+        // いても新規スポーンとして正しく初期化し直される
+        // （doc/soap-issues.md S-10）。
+        foam_allocator.release(entity);
         commands.entity(entity).despawn();
     }
 }

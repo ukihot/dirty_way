@@ -9,6 +9,7 @@ mod soap;
 mod state;
 mod ui;
 
+use avian2d::dynamics::solver::SolverConfig;
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::atlas::GutzAtlasPlugin;
@@ -31,6 +32,17 @@ fn main() {
         .add_plugins(PhysicsPlugins::default())
         // 小さめのアリーナに合わせて重力を強めにし、泡の山なり弾道を短めにする。
         .insert_resource(Gravity(Vec2::NEG_Y * 14.0))
+        // 課題S-38（2026-07-30、実機フィードバック）：泡だまりが積み上がる際、
+        // 泡と泡の間に隙間が残ったり、逆に接触した瞬間に上の泡が垂直方向へ
+        // 異常な速度で弾き飛ばされて消えたりする不具合があった。原因は
+        // Avianのデフォルト（`max_overlap_solve_speed = 4.0`）だと、重なりの
+        // 解消が1フレームでかなり強く行われること。これを下げ、重なりを
+        // 常に穏やかに・段階的に解消させることで、両方の症状を解消する
+        // （bubble.rs::settle_landed_bubbles参照。以前試した「着地済みの
+        // 泡はX方向をlockする」という対策は、Xがlockされた状態で重なりを
+        // 解消しようとするとソルバーが補正をY方向だけに押し付けてしまい、
+        // むしろ垂直方向への異常な弾き飛ばしを悪化させる原因だったため撤去した）。
+        .insert_resource(SolverConfig { max_overlap_solve_speed: 1.0, ..default() })
         .add_systems(Startup, actions::setup_input_bindings)
         .add_plugins((
             state::GameStatePlugin,
