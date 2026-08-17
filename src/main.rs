@@ -14,11 +14,8 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_gutzgutz::atlas::GutzAtlasPlugin;
 use bevy_gutzgutz::devtools::GutzDevtoolsPlugin;
-use bevy_gutzgutz::input::GutzInputPlugin;
-use bevy_gutzgutz::lifecycle::GutzLifeCyclePlugin;
-use bevy_gutzgutz::save::GutzSavePlugin;
+use bevy_gutzgutz::session::GutzGameSessionPlugin;
 use bevy_gutzgutz::steam::GutzSteamPlugin;
-use bevy_gutzgutz::ui::GutzUiPlugin;
 
 fn main() {
     App::new()
@@ -46,27 +43,16 @@ fn main() {
         .add_systems(Startup, actions::setup_input_bindings)
         .add_plugins((
             state::GameStatePlugin,
-            // GameState(Playing/GameOver)のInGame/OutGame分類・Pause/Resume・
-            // 遷移通知はgutzgutzへ委ねる（gutzgutzは状態そのものを持たず、
-            // 状態を扱うための仕組みだけ持つ）。
-            GutzLifeCyclePlugin::<state::GameState>::default(),
-            // キー入力はAction（RotateLeft/RotateRight/Charge/Restart）を
-            // 経由する。実際のキー割り当ては input.toml（読めない場合は
-            // actions.rsのハードコード値）。
-            GutzInputPlugin::<actions::PlayerAction, state::GameState>::default(),
-            // 「今開いているUI画面」のスタック（今はGameOverのみ）。
-            GutzUiPlugin::<ui::UiScreen>::default(),
-            // ハイスコアの永続化。保存先はOS標準の場所
-            // （Windows: %APPDATA%\ukihot\dirty_way\data\、macOS:
-            // ~/Library/Application Support/dev.ukihot.dirty_way/、
-            // Linux: ~/.local/share/dirty_way/。bevy_gutzgutz/README.mdの
-            // `save`節参照）。
-            GutzSavePlugin::<state::SaveData>::standard_location(
-                "dev",
-                "ukihot",
-                "dirty_way",
-                "save.toml",
-            ),
+            // セッションの共通基盤。ゲーム固有のState / Action / UI / SaveDataを
+            // 宣言するだけで、lifecycle・input・UIスタック・保存要求を一方向に
+            // 配線する。各型の意味、画面の見た目、実データへの反映はdirty_way側
+            // に残す（キー割り当てはinput.toml、読めない場合はactions.rs）。
+            GutzGameSessionPlugin::<
+                state::GameState,
+                actions::PlayerAction,
+                ui::UiScreen,
+                state::SaveData,
+            >::standard_save_location("dev", "ukihot", "dirty_way", "save.toml"),
             // Steam連携。実際のApp IDが割り当てられるまではSpaceWar
             // （開発・検証用のテストApp ID）を使う。Steamクライアント未起動
             // でもグレースフルデグレードするので、開発機で常時有効にして良い

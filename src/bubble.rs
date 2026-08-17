@@ -7,7 +7,7 @@ use bevy_gutzgutz::lifecycle::in_game;
 use rand::RngExt;
 
 use crate::consts::*;
-use crate::enemy::{Enemy, Trapped};
+use crate::enemy::{Enemy, FoamCoat, Trapped, add_foam_puffs};
 use crate::quality::FoamQualityProfile;
 use crate::scene::Floor;
 use crate::state::{GameState, Score};
@@ -530,12 +530,18 @@ fn despawn_out_of_bounds(
 fn bubble_enemy_interaction(
     mut commands: Commands,
     mut bubbles: Query<(&Transform, &mut Bubble)>,
-    mut enemies: Query<(Entity, &Transform, &mut Enemy)>,
+    mut enemies: Query<(Entity, &Transform, &mut Enemy, &mut FoamCoat)>,
     mut score: ResMut<Score>,
 ) {
     for (bubble_transform, mut bubble) in &mut bubbles {
+        // 床に残る泡だまりは景観であって、敵を自動撃破する罠ではない。
+        // これにより敵との判定対象は飛翔中の少数Bubbleだけになり、物理量・
+        // 判定量ともにプレイヤーが撃っている瞬間へ限定される。
+        if bubble.landing != LandingSurface::Flying {
+            continue;
+        }
         let bubble_pos = bubble_transform.translation.xy();
-        for (other, enemy_transform, mut enemy) in &mut enemies {
+        for (other, enemy_transform, mut enemy, mut coat) in &mut enemies {
             let dist = bubble_pos.distance(enemy_transform.translation.xy());
             if dist > bubble.radius + enemy.kind.radius() {
                 continue;
@@ -553,6 +559,7 @@ fn bubble_enemy_interaction(
             }
             bubble.hit_enemies.push(other);
 
+            add_foam_puffs(&mut commands, other, enemy.kind.radius(), &mut coat);
             enemy.health -= bubble.power;
             if enemy.health <= 0 {
                 score.0 += enemy.kind.score_value();

@@ -117,11 +117,24 @@ Steam連携やセーブ機能を必要としないケースもあるため、`de
 運用とし、使うプラグインのfeatureだけ有効化する。これによりビルド時間・
 依存クレート数を必要最小限に抑える。
 
+ただし機能を単なる横並びの一覧にはしない。タイトル・プレイ・ポーズ・メニュー・
+保存をまたぐものは **Session Core** とし、共有する契約を最小限に絞って一方向に
+接続する。具体的なゲームState、Action、画面、保存データの意味はゲーム側に
+残す。`GutzGameSessionPlugin<S, A, U, D>`は、この標準構成を一行で配線する
+合成入口であり、下位プラグインを隠すフレームワークではない。
+
+```text
+Session Core: lifecycle ──► input / UI / save
+Accelerators: atlas / camera / pacing / interaction
+Integrations: devtools / steam
+```
+
 ```toml
 [features]
 default = []
 devtools    = ["dep:bevy_egui"]   # 開発用オーバーレイ（egui採用は5.2節参照）
 interaction = []                   # raycast/grab/explosion等
+session     = ["lifecycle", "input", "ui", "save"]
 input       = []
 ui          = []
 save        = ["dep:serde", "dep:ron"]
@@ -153,6 +166,7 @@ bevy_gutzgutz/
 │   │   ├── explosion.rs
 │   │   └── impulse.rs
 │   ├── input/           (feature = "input")   … GutzInputPlugin
+│   ├── session.rs        (feature = "session") … GutzGameSessionPlugin
 │   ├── ui/               (feature = "ui")      … GutzUiPlugin
 │   ├── save/             (feature = "save")    … GutzSavePlugin
 │   ├── audio/            (feature = "audio")   … GutzAudioPlugin

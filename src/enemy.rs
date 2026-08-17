@@ -44,9 +44,12 @@ impl EnemyKind {
 
     fn max_health(self) -> i32 {
         match self {
-            EnemyKind::Dust => 1,
-            EnemyKind::Oil => 2,
-            EnemyKind::Mud => 4,
+            // 1発ごとにFoamPuffを2個ずつ増やす。最低でも数発は必要にして、
+            // 「付く → ふくらむ → 完全に包まれる」という視覚的な成長を
+            // プレイヤーが読めるようにする。
+            EnemyKind::Dust => 3,
+            EnemyKind::Oil => 6,
+            EnemyKind::Mud => 9,
         }
     }
 
@@ -93,7 +96,66 @@ impl EnemyKind {
 #[derive(Component)]
 pub struct Enemy {
     pub kind: EnemyKind,
+    /// 値は体力というより「完全に泡で包むまでに必要な残りの噴射回数」。
+    /// 物理的な圧殺ではなく、泡の量が敵を覆うことで無力化するゲーム性に
+    /// 置き換える。見た目の蓄積は`FoamCoat`が担当する。
     pub health: i32,
+}
+
+/// 敵の周囲に生成済みの、見た目専用の泡塊数。泡塊は剛体ではないため、
+/// 敵を何体出してもAvianの衝突ペアを増やさない。
+#[derive(Component, Default)]
+pub struct FoamCoat {
+    puff_count: u8,
+}
+
+/// `FoamCoat`を構成する、敵へ追従する1個の泡塊。個別Spriteを少しずつ
+/// 呼吸するように揺らすことで、シェーダによる大規模な密度場を使わずに
+/// ファンタジー調の「ふわふわ・もこもこ」を出す。
+#[derive(Component)]
+struct FoamPuff {
+    target: Entity,
+    offset: Vec2,
+    base_size: f32,
+    phase: f32,
+}
+
+/// 命中した敵へ、物理を持たない泡Spriteを追加する。`FoamCoat`が上限を
+/// 持つので、長時間当て続けても描画Entity数は敵1体あたり一定である。
+pub fn add_foam_puffs(commands: &mut Commands, target: Entity, radius: f32, coat: &mut FoamCoat) {
+    let mut rng = rand::rng();
+    for _ in 0..FOAM_PUFFS_PER_HIT {
+        if coat.puff_count >= FOAM_PUFFS_MAX_PER_ENEMY {
+            return;
+        }
+
+        // 先に付いた泡ほど中心寄り、後から付いた泡ほど外へ膨らむ。規則的な
+        // 円ではなく不揃いな輪郭にすることで、雲・綿菓子のような量感を作る。
+        let fullness = coat.puff_count as f32 / FOAM_PUFFS_MAX_PER_ENEMY as f32;
+        let angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let distance = radius * rng.random_range(0.12..(0.55 + fullness * 0.8));
+        let base_size = radius * rng.random_range(0.7..1.25) * (1.0 + fullness * 0.3);
+        let alpha = rng.random_range(0.72..0.92);
+        let tint = rng.random_range(0.92..1.0);
+
+        commands.spawn((
+            FoamPuff {
+                target,
+                offset: Vec2::new(angle.cos(), angle.sin()) * distance,
+                base_size,
+                phase: rng.random_range(0.0..std::f32::consts::TAU),
+            },
+            Sprite {
+                color: Color::srgba(tint, tint + (1.0 - tint) * 0.5, 1.0, alpha),
+                custom_size: Some(Vec2::splat(base_size)),
+                ..default()
+            },
+            // soapの全画面密度場（Z=0.5）より前に出し、敵を包む輪郭を確実に
+            // 読ませる。剛体もColliderも付けない。
+            Transform::from_xyz(0.0, 0.0, 1.0 + coat.puff_count as f32 * 0.001),
+        ));
+        coat.puff_count += 1;
+    }
 }
 
 /// 泡に埋もれている間だけ付与される鈍足状態。bubble.rs が接触中に毎フレーム
@@ -127,7 +189,7 @@ impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EnemySpawnTimer>().add_systems(
             Update,
-            (spawn_enemies, tick_trapped, move_enemies, enemy_reach_center)
+            (spawn_enemies, tick_trapped, move_enemies, animate_foam_puffs, enemy_reach_center)
                 .chain()
                 .run_if(in_game::<GameState>()),
         );
@@ -160,6 +222,7 @@ fn spawn_enemies(
         // （ゲームロジックには影響しない。当たり判定・移動・撃破は機能する）。
         commands.spawn((
             Enemy { kind, health: kind.max_health() },
+            FoamCoat::default(),
             RigidBody::Kinematic,
             Collider::circle(kind.radius()),
             CollisionLayers::new(
@@ -176,6 +239,7 @@ fn spawn_enemies(
 
     commands.spawn((
         Enemy { kind, health: kind.max_health() },
+        FoamCoat::default(),
         GutzSpriteAnimation::new(KNIGHT_WALK, KNIGHT_FRAME_DURATION),
         RigidBody::Kinematic,
         Collider::circle(kind.radius()),
@@ -226,17 +290,53 @@ fn move_enemies(mut enemies: Query<(&Enemy, &Transform, &mut LinearVelocity, Opt
     }
 }
 
+/// 泡塊は敵へ追従するだけで、物理には一切参加しない。サイズと位置を位相ごとに
+/// 少しだけ変えると、複数の円Spriteでも生きた泡が呼吸しているように見える。
+fn animate_foam_puffs(
+    time: Res<Time>,
+    mut commands: Commands,
+    // FoamPuff自身はEnemyを持たないため、`Without<FoamPuff>`で追従先と
+    // 更新対象が絶対に同一EntityにならないことをECSへ明示する。
+    targets: Query<&Transform, (With<Enemy>, Without<FoamPuff>)>,
+    mut puffs: Query<(Entity, &FoamPuff, &mut Transform)>,
+) {
+    let elapsed = time.elapsed_secs();
+    for (entity, puff, mut transform) in &mut puffs {
+        let Ok(target) = targets.get(puff.target) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+
+        let breath = 1.0 + (elapsed * 2.1 + puff.phase).sin() * 0.09;
+        let drift =
+            Vec2::new((elapsed * 1.7 + puff.phase).cos(), (elapsed * 2.4 + puff.phase * 1.7).sin())
+                * puff.base_size
+                * 0.08;
+        transform.translation =
+            target.translation + (puff.offset + drift).extend(transform.translation.z);
+        transform.scale = Vec3::splat(breath);
+    }
+}
+
 fn enemy_reach_center(
     mut commands: Commands,
     mut health: ResMut<Health>,
     mut next_state: ResMut<NextState<GameState>>,
     enemies: Query<(Entity, &Enemy, &Transform)>,
+    puffs: Query<(Entity, &FoamPuff)>,
 ) {
     for (entity, enemy, transform) in &enemies {
         let dist = transform.translation.x.abs();
         if dist <= CENTER_KILL_RADIUS {
             // bubble.rs 側の撃破処理と同一フレームで競合しうるため try_despawn にする。
             commands.entity(entity).try_despawn();
+            // GameOverへ入るとInGameの更新システムは停止する。その前に追従先を
+            // 失った泡塊も消して、タイトル／リザルト画面に残らないようにする。
+            for (puff_entity, puff) in &puffs {
+                if puff.target == entity {
+                    commands.entity(puff_entity).try_despawn();
+                }
+            }
             health.0 -= enemy.kind.contact_damage();
             if health.0 <= 0 {
                 health.0 = 0;

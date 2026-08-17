@@ -28,6 +28,8 @@ pub mod input;
 pub mod pacing;
 #[cfg(feature = "save")]
 pub mod save;
+#[cfg(feature = "session")]
+pub mod session;
 #[cfg(feature = "steam")]
 pub mod steam;
 #[cfg(feature = "ui")]
@@ -56,6 +58,8 @@ pub mod prelude {
     pub use crate::pacing::*;
     #[cfg(feature = "save")]
     pub use crate::save::*;
+    #[cfg(feature = "session")]
+    pub use crate::session::*;
     #[cfg(feature = "steam")]
     pub use crate::steam::*;
     #[cfg(feature = "ui")]

@@ -19,6 +19,10 @@ interaction = ["dep:avian3d", "bevy/bevy_camera", "bevy/bevy_window"]
 # GutzLifeCyclePlugin。State Debugger（devtoolsへの自動統合）はdevtools
 # feature併用時のみコンパイルされるが、lifecycle自体はdevtools非依存。
 lifecycle = ["bevy/bevy_state"]
+# ゲームセッションの中核。ゲームの具体的なState/Action/UI/SaveData型を受け取り、
+# lifecycle・input・ui・saveを一方向に配線する合成プラグインを公開する。
+# 各機能を個別に使いたいゲームは、従来どおり下位featureだけを有効化してよい。
+session = ["lifecycle", "input", "ui", "save"]
 # GutzInputPlugin。Actionの実行コンテキスト制限にlifecycleの型を使うため
 # 依存する。TOMLバインディング設定の読み込みにserde/tomlを使う。
 # keyboard/mouse/gamepadは消費側ゲームの設定に依存させず、gutzgutz自身が

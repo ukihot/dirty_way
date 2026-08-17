@@ -118,17 +118,21 @@ pub const IMPACT_SCATTER_MAX: f32 = 2.0;
 /// 終わらない）不具合が起きた。個々の泡を時間で消す仕組みは復活させず、
 /// 「同時に存在できる泡の総数」に上限を設け、超えた分は最も古い泡から
 /// 実体ごと（物理・当たり判定込みで）despawnする（bubble.rs::
-/// BubblePopulation）。SPRAY_INTERVAL間隔・NOZZLE_PRESS_TIMEでの連射量を
-/// 踏まえ、数分程度遊べば入れ替わりが起きる程度の値。
-pub const MAX_LIVE_BUBBLES: usize = 500;
+/// BubblePopulation）。
+///
+/// 見た目の「もこもこ」は敵へ追従するSprite群（FoamPuff）が担当するため、
+/// 床の剛体を何百個も残す必要はない。飛翔・着地の手触りを保てる96個に
+/// 制限し、Avianの接触ペア数を常に小さく保つ。
+pub const MAX_LIVE_BUBBLES: usize = 96;
 
 /// GPU側でFoam Aggregateの見た目を同時に表現できる最大数（doc/soap-model.md
 /// 第28.2節）。 `bubble.rs`（Main World、スロット割当）と`soap.rs`（Render
 /// World、GPUバッファ確保）の
 /// 両方がこの値を共有する（2箇所に独立した定数を置いて食い違わせない、
-/// S-09の教訓）。課題S-30でFOAM_CLUSTER_MAXを5→9に上げた分、比例して
-/// 増やしてある（同時に見た目を持てるBubble数の実質上限を維持するため）。
-pub const FOAM_INSTANCE_POOL_SIZE: u32 = 1024;
+/// S-09の教訓）。最大品質でも72 Aggregate × 7 cluster = 504 slotに収まる
+/// ため、512に留める。compute dispatchの走査量も半分になり、泡らしさは
+/// 敵のFoamPuffが補う。
+pub const FOAM_INSTANCE_POOL_SIZE: u32 = 512;
 
 /// 1つのBubbleが同時に使うFoam Instanceスロット数の範囲（doc/soap-issues.md
 /// 2026-07-28追記、課題S-30で2026-07-29追記）。1発=1個の孤立した楕円体だと、
@@ -149,6 +153,13 @@ pub const FOAM_INSTANCE_POOL_SIZE: u32 = 1024;
 /// 毎回ランダムに決める。
 pub const FOAM_CLUSTER_MIN: u32 = 4;
 pub const FOAM_CLUSTER_MAX: usize = 7;
+
+/// 敵に1発当たるごとに増える、物理を持たない見た目専用の泡塊数。
+/// 複数の半透明Spriteを少しずつ揺らすだけで、敵を包む「ふわふわ・もこもこ」
+/// を作る。敵の種類ごとに必要な被弾数を増やしているため、泡が育つ過程を
+/// 読み取れる。
+pub const FOAM_PUFFS_PER_HIT: u8 = 2;
+pub const FOAM_PUFFS_MAX_PER_ENEMY: u8 = 18;
 
 /// 敵が泡に埋もれている間の鈍足倍率と、接触が切れてから鈍足が続く猶予秒数。
 pub const TRAPPED_SPEED_MULTIPLIER: f32 = 0.15;

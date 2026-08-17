@@ -200,6 +200,15 @@ pub struct GutzSavePlugin<T: GutzSaveData> {
     _marker: PhantomData<fn() -> T>,
 }
 
+// `GutzGameSessionPlugin`のような合成プラグインが、ゲーム側から渡された
+// 保存先設定をそのまま内側のプラグインへ渡せるようにする。保持しているのは
+// PathBufとマーカーだけなので、セーブデータそのもののCloneは要求しない。
+impl<T: GutzSaveData> Clone for GutzSavePlugin<T> {
+    fn clone(&self) -> Self {
+        Self { path: self.path.clone(), _marker: PhantomData }
+    }
+}
+
 impl<T: GutzSaveData> GutzSavePlugin<T> {
     /// 任意の絶対/相対パスを直接指定する。テストや、OS標準の場所を
     /// あえて使いたくない特殊なケース向け。**通常のゲームは

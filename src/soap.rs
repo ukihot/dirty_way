@@ -586,10 +586,11 @@ fn queue_soap_metaballs(
 
     for (view_entity, view, _) in &views {
         let Some(phase) = phases.get_mut(&view.retained_view_entity) else { continue };
-        // sort_keyを最大値にして、他の全2D描画（床・キャラクター等）より
-        // 常に後＝手前に描く（旧TransparentSortingInfo3d::AlwaysOnTopと同じ意図）。
+        // 床・敵（Z=0）の上には泡を重ねつつ、敵を包む見た目専用のFoamPuff
+        // （Z=1）よりは後ろにする。床一面の密度場よりも、敵の周囲で膨らむ
+        // もこもこを前面に読ませるための描画順。
         phase.add_transient(Transparent2d {
-            sort_key: FloatOrd(f32::MAX),
+            sort_key: FloatOrd(0.5),
             pipeline: render_pipeline,
             entity: (view_entity, MainEntity::from(view_entity)),
             draw_function,

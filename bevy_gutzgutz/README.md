@@ -34,6 +34,34 @@ Yesならgutzgutz行き、ゲーム固有のドメインロジック（dirty_way
 tier切り替え・泡の積み上げ物理）はそのまま手を付けていない——原則自体を
 撤回したわけではなく、個別に判断した2件だけの例外。
 
+## アーキテクチャ：ゲームセッションの共通基盤
+
+gutzgutzは便利機能を横並びで増やすのではなく、ゲームが起動してから終了する
+までの「ゲームセッション」を支える薄い共通基盤として育てる。機能は次の3層に
+分類する。
+
+```text
+Session Core       lifecycle ──► input
+                    │             │
+                    ├──────────► UI
+                    └──────────► save
+
+Production Accelerators  atlas / camera / pacing / interaction
+Integrations             devtools / steam
+```
+
+- **Session Core** は、タイトル・プレイ・ポーズ・メニュー・保存という共通の
+  流れを支える。各プラグインは小さな契約（実行コンテキスト、Pause、UI画面の
+  開閉、保存要求と結果）だけを共有し、ゲーム固有の意味は知らない。
+- **Production Accelerators** は制作を速くする独立機能であり、Session Coreへ
+  依存しない。
+- **Integrations** は開発環境・外部サービスとの接続であり、ゲームのルールを
+  持ち込まない。
+
+「シナジー」とはプラグイン同士を強結合にすることではない。共有契約を通じて
+一方向に組み合わせられ、同じセッションの縦断シナリオで自然に機能することを
+指す。ゲーム側はState/Action/UI/SaveDataの意味と実装を持ち続ける。
+
 ## リポジトリ構成（現状）
 
 今は`dirty_way`のサブディレクトリとして、path依存（`bevy_gutzgutz = { path
@@ -56,7 +84,32 @@ bevy_gutzgutz = { path = "../gutzgutz", features = ["devtools", "lifecycle", "in
 公開プラグインは`GutzXxxPlugin`、公開Resourceは`GutzXxx`、公開Messageは
 `GutzXxxEvent`/`GutzXxxRequest`のように統一する。
 
+通常のゲームは、Session Coreを個別に4つ並べず、`session` featureと
+`GutzGameSessionPlugin`を使う。ゲーム側で宣言するのは固有の型と保存先だけで
+よい。
+
+```toml
+bevy_gutzgutz = { path = "../gutzgutz", default-features = false, features = ["session"] }
+```
+
+```rust
+app.add_plugins(GutzGameSessionPlugin::<GameState, PlayerAction, UiScreen, SaveData>::
+    standard_save_location("dev", "example", "my_game", "save.toml"),
+);
+```
+
+これは`lifecycle`・`input`・`ui`・`save`を追加する**合成入口**であり、Bevyや
+各下位プラグインを隠すフレームワークではない。セーブ不要のミニゲームなどは、
+必要な下位featureと`GutzXxxPlugin`だけを直接追加してよい。
+
 ## feature一覧
+
+### `session` — `GutzGameSessionPlugin<S, A, U, D>`
+
+ゲームセッションの標準構成。`S`（ゲームState）、`A`（入力Action）、`U`（UI
+画面）、`D`（保存データ）をゲーム側が渡すと、`lifecycle`・`input`・`ui`・
+`save`を一方向に配線する。各下位プラグインのAPIやゲームのアーキテクチャを
+隠蔽しないため、個別利用との混在・置き換えも可能。
 
 ### `devtools` — `GutzDevtoolsPlugin`
 

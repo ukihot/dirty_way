@@ -59,10 +59,9 @@ serde = { version = "1", features = ["derive"] }
 # 意図的な先行抽出。doc/gutzgutz-requirements.md参照）。
 bevy_gutzgutz = { path = "bevy_gutzgutz", features = [
     "devtools",
-    "lifecycle",
-    "input",
-    "ui",
-    "save",
+    # lifecycle / input / ui / save は、ゲームセッションの共通契約として
+    # session feature（GutzGameSessionPlugin）からまとめて有効化する。
+    "session",
     "steam",
     "atlas",
     "atlas-sprite2d",

@@ -29,19 +29,19 @@ impl FoamQuality {
     pub fn profile(self) -> FoamQualityProfile {
         match self {
             FoamQuality::Low => FoamQualityProfile {
-                max_aggregates: 16,
+                max_aggregates: 12,
                 microstructure_quality: MicrostructureQuality::Simple,
             },
             FoamQuality::Medium => FoamQualityProfile {
-                max_aggregates: 64,
+                max_aggregates: 32,
                 microstructure_quality: MicrostructureQuality::Normal,
             },
             FoamQuality::High => FoamQualityProfile {
-                max_aggregates: 256,
+                max_aggregates: 48,
                 microstructure_quality: MicrostructureQuality::Detailed,
             },
             FoamQuality::Cinematic => FoamQualityProfile {
-                max_aggregates: 512,
+                max_aggregates: 72,
                 microstructure_quality: MicrostructureQuality::Detailed,
             },
         }
