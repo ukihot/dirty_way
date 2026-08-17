@@ -1,15 +1,14 @@
 # gutzgutz（グツグツ）
 
-自社ゲーム開発の共通基盤。1作目（`dirty_way`）の実装から抽出した、複数の
-Bevyゲームで繰り返し必要になる「便利機能」「開発基盤」だけを、Cargo feature
-単位のプラグインとして提供する。
+Bevyゲーム開発の共通基盤。複数のゲームで繰り返し必要になる機能と開発基盤を、
+Cargo feature単位のプラグインとして提供する。
 
 ```text
 Bevy
  ↑
 gutzgutz
  ↑
-Game（dirty_way, 2作目, 3作目, ...）
+Game A / Game B / ...
 ```
 
 ## 位置づけ
@@ -19,20 +18,9 @@ Bevy/Avian3D本体を隠したりラップしたりしない。ゲームのア�
 規定しない。実態は「Bevyの上に、自社ゲーム制作で繰り返し使う知識と実装を
 蓄積していく層」であり、ゲーム側は必要に応じてAvian3D・Bevyを直接使ってよい。
 
-**判断基準**：「2作目を作るときにコピペしそうなコードか？」で切り分ける。
-Yesならgutzgutz行き、ゲーム固有のドメインロジック（dirty_wayで言えば
-泡・敵・チャージ）はゲーム側に残す。1作目で一度しか使っていないコードを、
-将来の可能性だけで抽象化することもしない——抽象化は「もう一度同じものを
-書いた」瞬間に行う、というのが原則。
-
-**2026-07-30追記**：`camera`/`atlas-sprite2d`の2つだけは、この原則を
-意図的に前倒しで上書きした——gutzgutzが今後多数の2Dアーケードゲーム
-（ホラー・物理シミュレーション・レース・タワーディフェンス・パズル等）を
-量産する土台になる方針が明確になったため、1作目の実装のみを根拠に
-先行抽出している（詳細は各featureの節参照）。逆に、同じタイミングで
-「まだ抽象化すべきでない」と判断した`dirty_way`側のコード（品質設定の
-tier切り替え・泡の積み上げ物理）はそのまま手を付けていない——原則自体を
-撤回したわけではなく、個別に判断した2件だけの例外。
+**判断基準**：複数のゲームで再利用でき、共通の入出力契約として表せるか。
+ゲーム固有のルール・演出・データ構造はゲーム側に残す。将来の可能性だけで
+抽象化せず、実際の利用から共通性が確認できた時点で追加する。
 
 ## アーキテクチャ：ゲームセッションの共通基盤
 
@@ -62,13 +50,11 @@ Integrations             devtools / steam
 一方向に組み合わせられ、同じセッションの縦断シナリオで自然に機能することを
 指す。ゲーム側はState/Action/UI/SaveDataの意味と実装を持ち続ける。
 
-## リポジトリ構成（現状）
+## 導入方針
 
-今は`dirty_way`のサブディレクトリとして、path依存（`bevy_gutzgutz = { path
-= "bevy_gutzgutz" }`）で参照している。2作目以降が実際に始まったら、独立
-リポジトリへ切り出し、`git`依存（tag/rev固定）に切り替える想定。非公開の
-自社ライブラリのためcrates.io公開もSemVer厳守も必須ではない——各ゲームが
-git依存をtag/rev固定する前提なので、gutzgutz側の破壊的変更は自由に行える。
+開発中はpath依存、複数プロジェクトで共有する段階ではgit依存（tagまたはrev
+固定）を推奨する。各ゲームを固定したバージョンへ依存させれば、基盤側は他の
+ゲームを壊さずに改善できる。
 
 ## 使い方
 
@@ -157,23 +143,21 @@ Avian3D自体のAPI（`RigidBody`/`Collider`等）はラップせず、`RigidBod
 （Bevy本体の資産ローダーそのものはラップしない）。足すのは以下の2段階だけ：
 
 1. **ビルド時のアトラス生成＋命名規約の強制**（`atlas-build` feature、
-   ゲーム側の`build.rs`から呼ぶビルド専用ヘルパー。既存の`steam`
-   feature向けdirty_way `build.rs`と同じ「ゲーム側build.rsから
-   gutzgutzのビルド専用ロジックを呼ぶ」形）
+   ゲーム側の`build.rs`から呼ぶビルド専用ヘルパー）
 2. **ビルド時に生成されたマニフェストを介した、名前引きのランタイム
    ルックアップ**（`atlas` feature、`GutzAtlasPlugin`本体）
 
 #### ビルド時：ディレクトリ構造の強制とアトラス化
 
-ソースディレクトリ（例：`assets/character/`）は、キャラ・アニメーション
+ソースディレクトリ（例：`assets/sprites/`）は、キャラ・アニメーション
 単位で再帰的にフォルダ分けする。**画像ファイルを直接含むフォルダ
 （leaf）だけが1つのtexture（アニメーション1本）を表し、フォルダ名は
 `{texture名}_{最大枚数}`でなければならない。** それ以外のフォルダ
 （namespace）は自由な名前で何段でもネストできる：
 
 ```text
-assets/character/
-    └── knight/
+assets/sprites/
+    └── hero/
         ├── idle_10/
         │   ├── 1.png
         │   ├── 2.png
@@ -184,7 +168,7 @@ assets/character/
 ```
 
 最終的なtexture名はnamespaceのパス＋leafのtexture名を`/`で連結した
-もの（上の例なら`knight/idle`, `knight/walk`）になる。leaf内のファイル名は
+もの（上の例なら`hero/idle`, `hero/walk`）になる。leaf内のファイル名は
 `{番号}.png`のみ（ゼロ埋めしてもしなくてもよい）。
 
 当初はディレクトリを使わず`{texture名}_{番号}_{最大枚数}.png`という
@@ -219,11 +203,8 @@ assets/character/
 - ルート直下に画像を直接置いている（`{texture名}_{最大枚数}/`という
   名前のサブフォルダを作ることを強制する）
 
-`pack`のこれら全パターンの検証ロジックは`bevy_gutzgutz/src/atlas_build.rs`
-の`#[cfg(test)]`で（`tempfile`で作った一時ディレクトリ＋合成PNGを使い）
-テスト済み。`dirty_way/assets/character/knight/`（実際に納品された
-587×707の連番PNG、`idle_10`/`walk_10`各10枚）でも`cargo build`から
-実際に生成し、動作確認済み。
+`pack`の検証ロジックは`src/atlas_build.rs`の`#[cfg(test)]`で、`tempfile`に
+作った一時ディレクトリと合成PNGを使ってテストしている。
 
 各leafは1枚のアトラス画像へ横一列でpackされ、namespaceと同じ
 ディレクトリ構造のまま`out_dir`へ出力される（例：
@@ -235,8 +216,8 @@ texture名 → アトラス画像パス・フレーム数・タイルサイズ�
 スクリプト専用の一時置き場で、`AssetServer`からは見えない。
 
 複数textureをまたいだ1枚の巨大アトラスへの集約（ドローコール削減の
-最適化）はv1のスコープ外——2作目以降で実際にドローコールがボトルネックに
-なってから検討する（本READMEの一貫した方針：早すぎる最適化はしない）。
+最適化）はv1のスコープ外——実際にドローコールがボトルネックになってから
+検討する（本READMEの一貫した方針：早すぎる最適化はしない）。
 
 **さらに強い保証（検討中）**：ここまでの検査は「納品されたフォルダが
 それ自体として整合しているか」までしか見ておらず、「ゲームコードが
@@ -265,10 +246,10 @@ Bevy本体をimportしない——PNGのデコード・パッキングに`image`
 ```rust
 app.add_plugins(GutzAtlasPlugin);
 
-fn spawn_knight(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
+fn spawn_hero(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
     // ビルド時に生成されたマニフェストをStartupで読み込み済み。
     // 生パス文字列はゲームコードに一切登場しない。
-    if let Some(frame) = atlases.frame("knight/idle", 0) {
+    if let Some(frame) = atlases.frame("hero/idle", 0) {
         // frame.image: Handle<Image>、frame.uv_rect: Rect（0.0〜1.0正規化）。
         // Sprite+TextureAtlas（2D）でもStandardMaterialのUVオフセット
         // （3Dメッシュ）でも、呼び出し側の描画方式に合わせて使う。
@@ -281,8 +262,8 @@ fn spawn_knight(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
 自体は`std::fs`+`toml`で直接読む。Bevyのアセットパイプラインは経由しない）
 と、そこが指すアトラス画像（こちらは通常の`AssetServer::load`）を読み込んで
 構築する。`frame(name, index)`は`Option<GutzAtlasFrame>`を返し、
-`Sprite`/`TextureAtlas`（2D）を直接組み立てて返すことはしない——dirty_way
-のような3Dゲームではメッシュ側のUVオフセットとして使いたいこともあるため。
+`Sprite`/`TextureAtlas`（2D）を直接組み立てて返すことはしない——3Dゲームでは
+メッシュ側のUVオフセットとして使うこともあるため。
 名前・フレーム番号の指定ミスはパニックではなく`Option`で表現し、コンパイル
 エラーにはしない——それを静的に防ぐには別途コード生成
 （マクロで`texture名`を型として持たせる等）が要り、v1のスコープ外とする。
@@ -290,17 +271,11 @@ fn spawn_knight(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
 **スコープ外**：アトラスパイプラインに乗らない任意画像の動的ロード
 （MOD・ユーザーコンテンツ等、`AssetServer`を直接使う）。
 
-**2026-07-30追記**：アニメーション再生（どのフレームを今表示するかの
-タイミング制御）は、当初「2作目以降で同じロジックが必要になってから
-`GutzSpriteAnimation`的な形で追加を検討する」としていたが、gutzgutzが
-今後多数の2Dアーケードゲーム（ホラー・物理シミュレーション・レース・
-タワーディフェンス・パズル等）を量産する土台になる方針が明確になった
-ため、dirty_wayでの最初の実装（`enemy.rs`の`WalkAnimation`）を機に前倒しで
-`atlas-sprite2d` featureとして抽出した。`atlas`本体は描画方式（2D Sprite /
-3DメッシュのUVオフセット）を問わない設計のまま維持し、`Sprite`への依存
-（`GutzSpriteAnimation`とその駆動システム）だけを独立featureへ分離している
-——3Dゲーム等`Sprite`を使わない消費側は`atlas`のみ有効化すれば
-`bevy_sprite`への依存は発生しない。
+アニメーション再生は`atlas-sprite2d` featureとして分離している。`atlas`
+本体は描画方式（2D Sprite / 3DメッシュのUVオフセット）を問わない設計を
+維持し、`Sprite`への依存（`GutzSpriteAnimation`とその駆動システム）だけを
+独立featureへ分離する。3Dゲーム等で`Sprite`を使わない消費側は`atlas`のみを
+有効化すれば、`bevy_sprite`への依存は発生しない。
 
 ```rust
 // GutzSpriteAnimation を Sprite と同じ Entity へ insert するだけで、
@@ -309,7 +284,7 @@ fn spawn_knight(mut commands: Commands, atlases: Res<GutzAtlasRegistry>) {
 // 自動で引くため、呼び出し側では持たない。
 commands.spawn((
     Sprite { image: frame.image, rect: Some(frame.pixel_rect), ..default() },
-    GutzSpriteAnimation::new("knight/walk", 0.1), // 名前, 1フレームあたりの秒数
+    GutzSpriteAnimation::new("hero/walk", 0.1), // 名前, 1フレームあたりの秒数
 ));
 ```
 
@@ -432,7 +407,7 @@ spawn_modal_panel(&mut commands, GutzModalPanelStyle::default())
 struct SaveData { high_score: u32 }
 
 app.add_plugins(GutzSavePlugin::<SaveData>::standard_location(
-    "dev", "ukihot", "dirty_way", "save.toml",
+    "com", "example", "my_game", "save.toml",
 ));
 
 // 保存
@@ -452,10 +427,9 @@ application, file_name)`が実際に書き込む場所：
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/{application}/{file_name}` |
 
 親ディレクトリが無い（初回起動）場合は保存時に自動で作成する。
-`ProjectDirs::from`がホームディレクトリ等を解決できなかった場合は、
-警告ログを出してカレントディレクトリの`file_name`にフォールバックする
-（セーブが使えないだけでゲーム自体は落とさない、他のfeatureと同じ
-グレースフルデグレード方針）。
+`ProjectDirs::from`がホームディレクトリ等を解決できなかった場合、意図しない
+場所へ書き込むフォールバックは行わない。保存・読み込み要求は
+`GutzSaveError::LocationUnavailable`として通知され、ゲーム自体は継続する。
 
 任意の絶対/相対パスを直接指定したい場合（テスト等）は`new(path)`も
 残してあるが、ゲームの実運用では`standard_location`を使うこと——
@@ -477,11 +451,11 @@ application, file_name)`が実際に書き込む場所：
 （`bevy-steamworks`の再エクスポート）経由で`Res<sdk::Client>`を直接使う。
 
 ```rust
-app.add_plugins(GutzSteamPlugin::new(GutzSteamPlugin::DEV_APP_ID)); // 480 = SpaceWar（開発用）
+app.add_plugins(GutzSteamPlugin::new(MY_STEAM_APP_ID));
 ```
 
-`dirty_way`では既にこのfeatureを有効化し、`GutzSteamPlugin::DEV_APP_ID`
-（実App ID未登録の開発段階のため）で組み込み済み。
+`MY_STEAM_APP_ID`はゲーム固有のApp IDを指定する。開発用のApp IDを使う場合も、
+リリース前に必ず自分のApp IDへ差し替えること。
 
 **重要**：`steam` featureを有効にすると、`steamworks-sys`がOS動的リンカ
 レベルで`libsteam_api.so`（Win: `steam_api64.dll` / Mac:
@@ -492,9 +466,8 @@ app.add_plugins(GutzSteamPlugin::new(GutzSteamPlugin::DEV_APP_ID)); // 480 = Spa
 （`error while loading shared libraries: libsteam_api.so: ...`）。
 
 このファイルはValveのSteamworks SDK配布物（`lib/steam/
-redistributable_bin`配下）に含まれる。`dirty_way`では公式SDK
-（partner.steamgames.comから取得したSteamworks SDK v1.65）の
-`redistributable_bin/linux64/libsteam_api.so`を配置している。
+redistributable_bin`配下）に含まれる。対象プラットフォーム用のファイルを
+ゲームの実行ファイルと同じ場所へ配布すること。
 
 なお`steamworks-sys`crate自体もビルド時リンク用に同バイナリを同梱して
 いるため、公式SDKを取得する前の一時的な動作確認だけなら
@@ -504,12 +477,9 @@ redistributable_bin/linux64/libsteam_api.so`を同じ場所へコピーすれば
 よい）。ただしバージョンが古い可能性があるため、実際の開発・リリースでは
 公式SDKの配布物に揃えること。
 
-`dirty_way/build.rs`が`steam_redist/linux64/libsteam_api.so`を検出すると、
-実際の出力ディレクトリ（`target/debug/`等）へ自動コピーし、`$ORIGIN`を
-rpathに追加する。これにより素の`cargo run`だけで動く
-（`LD_LIBRARY_PATH`の手動設定は不要）。`steam_redist/`はgit管理外
-（`.gitignore`参照）。ファイル未配置でも`cargo build`自体は通り、実行時に
-起動不能になるだけなので、CI等Steamと無縁な環境でのビルドは壊れない。
+開発時はゲーム側の`build.rs`または配布スクリプトで、対象プラットフォームの
+Steam APIライブラリを実行ファイルの隣へ配置する。ファイル未配置でも
+`cargo build`は通るが、実行時にはOSローダー段階で起動できない。
 
 Steamクライアント自体が起動していない・ログインしていない場合は
 （このファイルさえあれば）`SteamAPI_Init`が正常に失敗を返し、
@@ -544,9 +514,7 @@ fn spawn_enemies(time: Res<Time>, mut timer: ResMut<EnemySpawnTimer>, /* ... */)
 ```
 
 `ramp_per_sec`に`0.0`（`start == min`）を渡せば、ランプなしの固定間隔
-クールダウンとしても使える。dirty_wayの`enemy.rs`（ランプあり）と
-`player.rs`のノズル連射クールダウン（ランプなし）で、同じ「周期的に
-再アームされるタイマー」パターンが独立に2箇所書かれていたのを機に抽出した。
+クールダウンとしても使える。
 
 ### `camera` — `GutzCameraPlugin` / `spawn_fit_camera_2d`
 
@@ -568,16 +536,10 @@ let camera = spawn_fit_camera_2d(&mut commands, GutzCameraFit2d {
 commands.entity(camera).insert(Msaa::Off);
 ```
 
-**2026-07-30追記**：当初「dirty_wayと異なるカメラ制御を要求する2作目が
-出てから中身を詰める」としていたが、`atlas-sprite2d`と同じ理由
-（複数ジャンルのゲームを量産する前提が明確になったこと）で、dirty_wayの
-`scene.rs`にあったカメラセットアップを機に前倒しで実装した。
-
 ### `audio` — 未着手
 
-現時点では`dirty_way`にまだ該当する共通化対象コードが存在しないため、
-「何もしないが`app.add_plugins(...)`で差し込める」骨組みだけを用意して
-ある。実際にサウンドが必要なゲームが出てから中身を詰める。
+現在は「`app.add_plugins(...)`で差し込める」骨組みのみを用意している。
+再生方式・ミキサー・設定保存の契約が定まった段階で実装する。
 
 ## 非機能要件
 
